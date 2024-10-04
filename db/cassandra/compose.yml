@@ -1,0 +1,16 @@
+version: '3'
+
+services:
+  cassandra:
+    image: cassandra:latest
+    container_name: cassandra_example
+    ports:
+      - "9042:9042"
+    environment:
+      - CASSANDRA_USER=example
+      - CASSANDRA_PASSWORD=example
+    volumes:
+      - cassandra-data:/var/lib/cassandra
+
+volumes:
+  cassandra-data:
