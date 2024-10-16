@@ -1,6 +1,6 @@
 use std::{fs::File, io::Read};
 
-use cassandra::ast_queries::keyspace_query;
+use cassandra::ast_queries::keyspace_queries::keyspace_query;
 use eframe::{run_native, NativeOptions};
 use rfd::FileDialog;
 
@@ -29,7 +29,11 @@ impl eframe::App for App {
                 let mut parser = tree_sitter::Parser::new();
                 parser.set_language(&tree_sitter_cql::language()).unwrap();
                 let root = parser.parse(&self.dump, None).unwrap();
-                keyspace_query(&self.dump, &root.root_node());
+                if let Ok(res) = keyspace_query(&self.dump, &root) {
+                    println!("{:#?}", res);
+                } else {
+                    println!("error parsing keyspace");
+                }
             }
         });
     }
