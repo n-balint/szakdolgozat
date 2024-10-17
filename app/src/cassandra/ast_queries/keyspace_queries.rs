@@ -10,16 +10,11 @@ pub fn keyspace_query(source: &str, node: &Tree) -> Result<Keyspace, ()> {
     let mut cursor = node.walk();
     let keyspace_name = get_keyspace_name(&mut cursor, source)?;
     let replication_list = get_replication_list_items(&mut cursor, source)?;
-    let durable_writes = get_durable_writes(&mut cursor, source);
+    let durable_writes = get_durable_writes(cursor, source);
     let mut replication_map: HashMap<String, String> = HashMap::new();
 
     for pair in replication_list.iter() {
-        let split = pair
-            .split(":")
-            .collect::<Vec<_>>()
-            .iter()
-            .map(|&s| s.trim())
-            .collect::<Vec<_>>();
+        let split = pair.split(":").map(|s| s.trim()).collect::<Vec<_>>();
         if split.len() != 2 {
             return Err(());
         }
@@ -38,7 +33,6 @@ pub fn keyspace_query(source: &str, node: &Tree) -> Result<Keyspace, ()> {
 
     replication_map.remove(&replication_class[0].0);
 
-    println!("patternmatcherr");
     let strategy = match &replication_class[0].1[..] {
         "'SimpleStrategy'" => {
             if let Some(factor) = replication_map.get("'replication_factor'") {
@@ -80,6 +74,8 @@ fn get_keyspace_name(cursor: &mut TreeCursor<'_>, source: &str) -> Result<String
             break;
         }
     }
+    cursor.goto_parent();
+    debug_assert_eq!(cursor.node().kind(), "create_keyspace");
     Err(())
 }
 /// Return the replication list items. The cursor must point to `(create_keyspace)`. In the end it
@@ -90,6 +86,7 @@ fn get_replication_list_items(
 ) -> Result<Vec<String>, ()> {
     let mut replication_list_items = Vec::new();
     debug_assert_eq!(cursor.node().kind(), "create_keyspace");
+    let original_cursor = cursor.clone();
 
     // move into keyspace definition list
     cursor.goto_first_child();
@@ -101,10 +98,7 @@ fn get_replication_list_items(
                     replication_list_items.push(source[cursor.node().byte_range()].to_string());
                 }
                 if !cursor.goto_next_sibling() {
-                    // to replication_list
-                    cursor.goto_parent();
-                    // to create_keyspace
-                    cursor.goto_parent();
+                    cursor.reset_to(&original_cursor);
                     debug_assert_eq!(cursor.node().kind(), "create_keyspace");
                     return Ok(replication_list_items);
                 }
@@ -114,12 +108,13 @@ fn get_replication_list_items(
             break;
         }
     }
+    cursor.reset_to(&original_cursor);
     Err(())
 }
 
 /// Returns whether durable writes are enabled or not. The cursor must point to
-/// `(create_keyspace)`. The cursor will be returned to `(source_file)`.
-fn get_durable_writes(cursor: &mut TreeCursor<'_>, source: &str) -> bool {
+/// `(create_keyspace)`.
+fn get_durable_writes(mut cursor: TreeCursor<'_>, source: &str) -> bool {
     debug_assert_eq!(cursor.node().kind(), "create_keyspace");
 
     // move into keyspace definition list
@@ -136,8 +131,6 @@ fn get_durable_writes(cursor: &mut TreeCursor<'_>, source: &str) -> bool {
                 .map(|&x| Some(x.trim().to_uppercase() == "TRUE"))
                 .is_some();
 
-            // move back to
-            cursor.goto_parent();
             return enabled;
         }
         if !cursor.goto_next_sibling() {
@@ -164,7 +157,7 @@ mod test {
         let mut cursor = tree.walk();
         let name = get_keyspace_name(&mut cursor, stmt);
         let replication = get_replication_list_items(&mut cursor, stmt);
-        let durable = get_durable_writes(&mut cursor, stmt);
+        let durable = get_durable_writes(cursor, stmt);
 
         assert_eq!(name, Ok("books".to_string()));
         assert_eq!(

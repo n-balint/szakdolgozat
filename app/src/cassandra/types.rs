@@ -1,4 +1,4 @@
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum PrimitiveType {
     Ascii,
     Bigint,
@@ -23,21 +23,14 @@ pub enum PrimitiveType {
     Varint,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum CollectionType {
     List(Box<Type>),
     Map(Box<Type>, Box<Type>),
     Set(Box<Type>),
 }
 
-#[derive(Debug)]
-pub struct UserDefinedType {
-    name: String,
-    keyspace: String,
-    types: Vec<(String, Type)>,
-}
-
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Type {
     Primitive(PrimitiveType),
     Collection {
@@ -47,7 +40,8 @@ pub enum Type {
     Tuple(Vec<Type>),
     Udt {
         frozen: bool,
-        fields: UserDefinedType,
+        name: String,
+        keyspace: String,
     },
 }
 
