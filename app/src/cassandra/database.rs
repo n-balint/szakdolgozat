@@ -22,14 +22,16 @@ impl Keyspace {
 #[derive(Debug, Clone)]
 pub struct Udt {
     name: String,
-    types: Vec<(String, Box<Type>)>,
+    keyspace: String,
+    types: Vec<(String, Type)>,
 }
 
 impl Udt {
-    pub fn new(name: &str) -> Self {
+    pub fn new(keyspace: &str, name: &str, types: Vec<(String, Type)>) -> Self {
         Self {
             name: name.to_string(),
-            types: Vec::new(),
+            keyspace: keyspace.to_string(),
+            types,
         }
     }
 }

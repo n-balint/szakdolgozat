@@ -117,15 +117,20 @@ fn get_column_definitions(
     Ok(column_definitions)
 }
 
-fn parse_type(cursor: &mut TreeCursor<'_>, source: &str) -> Result<Type, ()> {
-    // skip non-named tokens like ','' '<' '>'
+fn skip_anon_tokens(cursor: &mut TreeCursor<'_>) {
     while !cursor.node().is_named() {
         cursor.goto_next_sibling();
     }
+}
+
+pub fn parse_type(cursor: &mut TreeCursor<'_>, source: &str) -> Result<Type, ()> {
     // this is the base case in recursive cases the cursor is already on the child type
+    skip_anon_tokens(cursor);
     if cursor.node().kind() == "cql_type" {
         cursor.goto_first_child();
     }
+    // skip non-named tokens like ','' '<' '>'
+    skip_anon_tokens(cursor);
     match cursor.node().kind() {
         "native_type" => {
             let typename = &source[cursor.node().byte_range()];
@@ -137,7 +142,9 @@ fn parse_type(cursor: &mut TreeCursor<'_>, source: &str) -> Result<Type, ()> {
             let collection_type_str = &source[cursor.node().byte_range()];
             cursor.goto_next_sibling();
 
+            let snapshot = cursor.clone();
             let type1 = parse_type(cursor, source)?;
+            cursor.reset_to(&snapshot);
             match collection_type_str {
                 "list" => Ok(Type::Collection {
                     frozen: false,
@@ -148,8 +155,9 @@ fn parse_type(cursor: &mut TreeCursor<'_>, source: &str) -> Result<Type, ()> {
                     r#type: CollectionType::Set(Box::new(type1)),
                 }),
                 "map" => {
+                    skip_anon_tokens(cursor);
                     cursor.goto_next_sibling();
-                    cursor.goto_next_sibling();
+                    skip_anon_tokens(cursor);
                     let type2 = parse_type(cursor, source)?;
                     Ok(Type::Collection {
                         frozen: false,
@@ -160,11 +168,14 @@ fn parse_type(cursor: &mut TreeCursor<'_>, source: &str) -> Result<Type, ()> {
             }
         }
         "tuple_type" => {
-            cursor.goto_first_child();
             let mut types = Vec::new();
+            cursor.goto_first_child();
+            skip_anon_tokens(cursor);
             loop {
-                let tuple_element = parse_type(cursor, source)?;
-                types.push(tuple_element);
+                let snapshot = cursor.clone();
+                types.push(parse_type(cursor, source)?);
+                cursor.reset_to(&snapshot);
+                cursor.goto_next_sibling();
                 if !cursor.goto_next_sibling() {
                     break;
                 }
@@ -190,16 +201,22 @@ fn parse_type(cursor: &mut TreeCursor<'_>, source: &str) -> Result<Type, ()> {
         }
         "user_defined_type" => {
             let udt_name = &source[cursor.node().byte_range()];
-            let split = udt_name.split('.').collect::<Vec<_>>();
-            if split.get(1).is_none() {
-                return Err(());
+            let name;
+            let mut keyspace = "";
+            if udt_name.contains('.') {
+                let split = udt_name.split('.').collect::<Vec<_>>();
+                if split.len() != 2 {
+                    return Err(());
+                }
+                keyspace = split[0];
+                name = split[1];
+            } else {
+                name = udt_name;
             }
-            let keyspace = split[0].to_string();
-            let name = split[1].to_string();
             Ok(Type::Udt {
                 frozen: false,
-                name,
-                keyspace,
+                name: name.to_string(),
+                keyspace: keyspace.to_string(),
             })
         }
         _ => Err(()),

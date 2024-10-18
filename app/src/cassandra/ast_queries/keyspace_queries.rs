@@ -75,7 +75,6 @@ fn get_keyspace_name(cursor: &mut TreeCursor<'_>, source: &str) -> Result<String
         }
     }
     cursor.goto_parent();
-    debug_assert_eq!(cursor.node().kind(), "create_keyspace");
     Err(())
 }
 /// Return the replication list items. The cursor must point to `(create_keyspace)`. In the end it

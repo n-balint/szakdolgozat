@@ -1,6 +1,8 @@
 use std::{fs::File, io::Read};
 
-use cassandra::ast_queries::{keyspace_queries::keyspace_query, table_queries::table_query};
+use cassandra::ast_queries::{
+    create_type_queries::udt_query, keyspace_queries::keyspace_query, table_queries::table_query,
+};
 use eframe::{run_native, NativeOptions};
 use rfd::FileDialog;
 
@@ -40,6 +42,16 @@ impl eframe::App for App {
                 parser.set_language(&tree_sitter_cql::language()).unwrap();
                 let root = parser.parse(&self.dump, None).unwrap();
                 if let Ok(res) = table_query(&self.dump, &root) {
+                    println!("{:#?}", res);
+                } else {
+                    println!("error parsing table info");
+                }
+            }
+            if ui.button("extract typedefs").clicked() {
+                let mut parser = tree_sitter::Parser::new();
+                parser.set_language(&tree_sitter_cql::language()).unwrap();
+                let root = parser.parse(&self.dump, None).unwrap();
+                if let Ok(res) = udt_query(&self.dump, &root) {
                     println!("{:#?}", res);
                 } else {
                     println!("error parsing table info");
