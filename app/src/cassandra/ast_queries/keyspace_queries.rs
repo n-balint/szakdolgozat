@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use tree_sitter::{Tree, TreeCursor};
 
+use crate::cassandra::ast_nodes::AstNode;
 use crate::cassandra::database::{Replication, Strategy};
 
 use crate::cassandra::database::Keyspace;
@@ -46,22 +47,22 @@ pub fn keyspace_query(source: &str, node: &Tree) -> Result<Keyspace, ()> {
     };
 
     let replication = Replication::new(strategy, durable_writes);
-    Ok(Keyspace::new(&keyspace_name, replication))
+    Ok(Keyspace::new(keyspace_name, replication))
 }
 
 /// Returns the name of the first keyspace encountered. Moves the cursor back to create_keyspace
 /// (parent). The starter node must be the root `(source_file)`
 fn get_keyspace_name(cursor: &mut TreeCursor<'_>, source: &str) -> Result<String, ()> {
-    debug_assert_eq!(cursor.node().kind(), "source_file");
+    debug_assert_eq!(cursor.node().kind(), AstNode::SOURCE_FILE);
     cursor.goto_first_child();
     loop {
-        if cursor.node().kind() == "create_keyspace" {
+        if cursor.node().kind() == AstNode::CREATE_KEYSPACE {
             cursor.goto_first_child();
             loop {
-                if cursor.node().kind() == "keyspace_name" {
+                if cursor.node().kind() == AstNode::KEYSPACE_NAME {
                     let keyspace_name = Ok(source[cursor.node().byte_range()].to_string());
                     cursor.goto_parent();
-                    debug_assert_eq!(cursor.node().kind(), "create_keyspace");
+                    debug_assert_eq!(cursor.node().kind(), AstNode::CREATE_KEYSPACE);
                     return keyspace_name;
                 }
 
@@ -77,6 +78,7 @@ fn get_keyspace_name(cursor: &mut TreeCursor<'_>, source: &str) -> Result<String
     cursor.goto_parent();
     Err(())
 }
+
 /// Return the replication list items. The cursor must point to `(create_keyspace)`. In the end it
 /// moves the cursor back to `(create_keyspace)`.
 fn get_replication_list_items(
@@ -84,21 +86,21 @@ fn get_replication_list_items(
     source: &str,
 ) -> Result<Vec<String>, ()> {
     let mut replication_list_items = Vec::new();
-    debug_assert_eq!(cursor.node().kind(), "create_keyspace");
+    debug_assert_eq!(cursor.node().kind(), AstNode::CREATE_KEYSPACE);
     let original_cursor = cursor.clone();
 
     // move into keyspace definition list
     cursor.goto_first_child();
     loop {
-        if cursor.node().kind() == "replication_list" {
+        if cursor.node().kind() == AstNode::REPLICATION_LIST {
             cursor.goto_first_child();
             loop {
-                if cursor.node().kind() == "replication_list_item" {
+                if cursor.node().kind() == AstNode::REPLICATION_LIST_ITEM {
                     replication_list_items.push(source[cursor.node().byte_range()].to_string());
                 }
                 if !cursor.goto_next_sibling() {
                     cursor.reset_to(&original_cursor);
-                    debug_assert_eq!(cursor.node().kind(), "create_keyspace");
+                    debug_assert_eq!(cursor.node().kind(), AstNode::CREATE_KEYSPACE);
                     return Ok(replication_list_items);
                 }
             }
@@ -114,23 +116,19 @@ fn get_replication_list_items(
 /// Returns whether durable writes are enabled or not. The cursor must point to
 /// `(create_keyspace)`.
 fn get_durable_writes(mut cursor: TreeCursor<'_>, source: &str) -> bool {
-    debug_assert_eq!(cursor.node().kind(), "create_keyspace");
+    debug_assert_eq!(cursor.node().kind(), AstNode::CREATE_KEYSPACE);
 
     // move into keyspace definition list
     cursor.goto_first_child();
     loop {
-        if cursor.node().kind() == "durable_writes" {
+        if cursor.node().kind() == AstNode::DURABLE_WRITES {
             // text value looks like "durable_writes = {TRUE, FALSE}"
             let text_value = &source[cursor.node().byte_range()];
 
-            let enabled = text_value
-                .split("=")
-                .collect::<Vec<_>>()
-                .get(1)
-                .map(|&x| Some(x.trim().to_uppercase() == "TRUE"))
-                .is_some();
-
-            return enabled;
+            let pair = text_value.split("=").collect::<Vec<_>>();
+            if let Some(value) = pair.get(1) {
+                return value.trim().eq_ignore_ascii_case("true");
+            }
         }
         if !cursor.goto_next_sibling() {
             break;
@@ -168,5 +166,99 @@ mod test {
             ])
         );
         assert!(!durable);
+    }
+
+    #[test]
+    fn test_durable_writes_true() {
+        let stmt = "
+        CREATE KEYSPACE kittens WITH replication = {'class': 'NetworkTopologyStrategy', 'DC1' : '3'} AND durable_writes = true;
+        ";
+        let mut parser = Parser::new();
+        parser.set_language(&tree_sitter_cql::language()).unwrap();
+        let tree = parser.parse(stmt, None).unwrap();
+        let mut cursor = tree.walk();
+        let name = get_keyspace_name(&mut cursor, stmt);
+        let replication = get_replication_list_items(&mut cursor, stmt);
+        let durable = get_durable_writes(cursor, stmt);
+
+        assert_eq!(name, Ok("kittens".to_string()));
+        assert_eq!(
+            replication,
+            Ok(vec![
+                "'class': 'NetworkTopologyStrategy'".to_string(),
+                "'DC1' : '3'".to_string()
+            ])
+        );
+        assert!(durable);
+    }
+
+    #[test]
+    fn test_durable_writes_false() {
+        let stmt = "
+        CREATE KEYSPACE example WITH replication = {'class': 'NetworkTopologyStrategy'} AND durable_writes = false;
+        ";
+        let mut parser = Parser::new();
+        parser.set_language(&tree_sitter_cql::language()).unwrap();
+        let tree = parser.parse(stmt, None).unwrap();
+        let mut cursor = tree.walk();
+        let name = get_keyspace_name(&mut cursor, stmt);
+        let replication = get_replication_list_items(&mut cursor, stmt);
+        let durable = get_durable_writes(cursor, stmt);
+        eprintln!("{}", durable);
+
+        assert_eq!(name, Ok("example".to_string()));
+        assert_eq!(
+            replication,
+            Ok(vec!["'class': 'NetworkTopologyStrategy'".to_string()])
+        );
+        assert!(!durable);
+    }
+
+    #[test]
+    fn test_simple_replication() {
+        let stmt = "
+        CREATE KEYSPACE something WITH replication = {'class': 'SimpleStrategy', 'replication_factor' : '3'};
+        ";
+        let mut parser = Parser::new();
+        parser.set_language(&tree_sitter_cql::language()).unwrap();
+        let tree = parser.parse(stmt, None).unwrap();
+        let mut cursor = tree.walk();
+        let name = get_keyspace_name(&mut cursor, stmt);
+        let replication = get_replication_list_items(&mut cursor, stmt);
+        let durable = get_durable_writes(cursor, stmt);
+
+        assert_eq!(name, Ok("something".to_string()));
+        assert_eq!(
+            replication,
+            Ok(vec![
+                "'class': 'SimpleStrategy'".to_string(),
+                "'replication_factor' : '3'".to_string()
+            ])
+        );
+        assert!(!durable);
+    }
+
+    #[test]
+    fn test_simple_replication_durable_writes() {
+        let stmt = "
+        CREATE KEYSPACE ksname WITH replication = {'class': 'SimpleStrategy', 'replication_factor' : '4'} AND durable_writes = true;
+        ";
+        let mut parser = Parser::new();
+        parser.set_language(&tree_sitter_cql::language()).unwrap();
+        let tree = parser.parse(stmt, None).unwrap();
+        let mut cursor = tree.walk();
+        let name = get_keyspace_name(&mut cursor, stmt);
+        let replication = get_replication_list_items(&mut cursor, stmt);
+        let durable = get_durable_writes(cursor, stmt);
+
+        assert_eq!(name, Ok("ksname".to_string()));
+        assert_eq!(
+            replication,
+            Ok(vec![
+                "'class': 'SimpleStrategy'".to_string(),
+                "'replication_factor' : '4'".to_string()
+            ])
+        );
+        assert!(durable);
     }
 }

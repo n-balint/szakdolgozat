@@ -7,15 +7,40 @@ pub struct Keyspace {
     name: String,
     replication: Replication,
     udts: Vec<Udt>,
+    tables: Vec<Table>,
 }
 
 impl Keyspace {
-    pub fn new(name: &str, replication: Replication) -> Self {
+    pub fn new(name: String, replication: Replication) -> Self {
         Self {
-            name: name.to_string(),
+            name,
             replication,
             udts: Vec::new(),
+            tables: Vec::new(),
         }
+    }
+
+    pub fn set_udts(&mut self, udts: Vec<Udt>) {
+        self.udts = udts;
+    }
+
+    pub fn set_tables(&mut self, tables: Vec<Table>) {
+        self.tables = tables;
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn replication(&self) -> &Replication {
+        &self.replication
+    }
+
+    pub fn udts(&self) -> &Vec<Udt> {
+        &self.udts
+    }
+    pub fn tables(&self) -> &Vec<Table> {
+        &self.tables
     }
 }
 
@@ -27,12 +52,24 @@ pub struct Udt {
 }
 
 impl Udt {
-    pub fn new(keyspace: &str, name: &str, types: Vec<(String, Type)>) -> Self {
+    pub fn new(keyspace: String, name: String, types: Vec<(String, Type)>) -> Self {
         Self {
-            name: name.to_string(),
-            keyspace: keyspace.to_string(),
+            name,
+            keyspace,
             types,
         }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn keyspace(&self) -> &str {
+        &self.keyspace
+    }
+
+    pub fn types(&self) -> &Vec<(String, Type)> {
+        &self.types
     }
 }
 
@@ -49,6 +86,14 @@ impl Replication {
             strategy,
         }
     }
+
+    pub fn durable_writes(&self) -> bool {
+        self.durable_writes
+    }
+
+    pub fn strategy(&self) -> &Strategy {
+        &self.strategy
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -64,11 +109,15 @@ pub struct Table {
 }
 
 impl Table {
-    pub fn new(name: &str, columns: Vec<ColumnDefinition>) -> Self {
-        Self {
-            name: name.to_string(),
-            columns,
-        }
+    pub fn new(name: String, columns: Vec<ColumnDefinition>) -> Self {
+        Self { name, columns }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    pub fn columns(&self) -> &Vec<ColumnDefinition> {
+        &self.columns
     }
 }
 
@@ -82,9 +131,9 @@ pub struct ColumnDefinition {
 }
 
 impl ColumnDefinition {
-    pub fn new(name: &str, r#type: Type) -> Self {
+    pub fn new(name: String, r#type: Type) -> Self {
         Self {
-            name: name.to_string(),
+            name,
             r#type,
             clustering_key: false,
             clustering_order_by: None,

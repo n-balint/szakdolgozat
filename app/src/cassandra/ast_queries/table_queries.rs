@@ -12,11 +12,13 @@ pub fn table_query(source: &str, node: &Tree) -> Result<Vec<Table>, ()> {
     cursor.goto_first_child();
     loop {
         if cursor.node().kind() == "create_table" {
+            let snapshot = cursor.clone();
             let name = get_table_name(&mut cursor, source)?;
             move_to_column_definition_list(&mut cursor)?;
             let column_definition = get_column_definitions(&mut cursor, source)?;
-            tables.push(Table::new(&name, column_definition));
-            cursor.goto_parent();
+            tables.push(Table::new(name, column_definition));
+            cursor.reset_to(&snapshot);
+            println!("{}", cursor.node().kind());
         }
         if !cursor.goto_next_sibling() {
             break;
@@ -105,7 +107,7 @@ fn get_column_definitions(
             debug_assert_eq!(cursor.node().kind(), "cql_type");
 
             let type_ = parse_type(cursor, source)?;
-            let column_definition = ColumnDefinition::new(name, type_);
+            let column_definition = ColumnDefinition::new(name.to_string(), type_);
             column_definitions.push(column_definition);
             cursor.reset_to(&original_cursor);
         }

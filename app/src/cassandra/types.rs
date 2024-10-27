@@ -74,3 +74,71 @@ impl TryFrom<&str> for PrimitiveType {
         }
     }
 }
+
+impl std::fmt::Display for PrimitiveType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl std::fmt::Display for CollectionType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            Type::Collection {
+                frozen: false,
+                r#type: self.clone()
+            }
+        )
+    }
+}
+
+impl std::fmt::Display for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Primitive(x) => write!(f, "{}", x),
+            Self::Tuple(x) => {
+                let list = x
+                    .iter()
+                    .map(|elem| format!("{}", elem))
+                    .collect::<Vec<_>>()
+                    .join(",");
+
+                write!(f, "tuple<{}>", list)
+            }
+            Self::Udt {
+                frozen,
+                name,
+                keyspace,
+            } => match frozen {
+                true => write!(f, "frozen<{}.{}>", keyspace, name),
+                false => write!(f, "{}.{}", keyspace, name),
+            },
+            Self::Collection { frozen, r#type } => match frozen {
+                true => match r#type {
+                    CollectionType::Map(k, v) => {
+                        write!(f, "frozen<map<{}, {}>>", k, v)
+                    }
+                    CollectionType::Set(item) => {
+                        write!(f, "frozen<set<{}>>", item)
+                    }
+                    CollectionType::List(item) => {
+                        write!(f, "frozen<list<{}>>", item)
+                    }
+                },
+                false => match r#type {
+                    CollectionType::Map(k, v) => {
+                        write!(f, "map<{}, {}>", k, v)
+                    }
+                    CollectionType::Set(item) => {
+                        write!(f, "set<{}>", item)
+                    }
+                    CollectionType::List(item) => {
+                        write!(f, "list<{}>", item)
+                    }
+                },
+            },
+        }
+    }
+}
