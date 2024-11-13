@@ -1,4 +1,4 @@
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub enum PrimitiveType {
     Ascii,
     Bigint,
@@ -23,14 +23,14 @@ pub enum PrimitiveType {
     Varint,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum CollectionType {
     List(Box<Type>),
     Map(Box<Type>, Box<Type>),
     Set(Box<Type>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum Type {
     Primitive(PrimitiveType),
     Collection {
@@ -111,6 +111,7 @@ impl std::fmt::Display for Type {
                 frozen,
                 name,
                 keyspace,
+                ..
             } => match frozen {
                 true => write!(f, "frozen<{}.{}>", keyspace, name),
                 false => write!(f, "{}.{}", keyspace, name),

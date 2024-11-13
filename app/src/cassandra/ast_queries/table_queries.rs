@@ -1,8 +1,11 @@
 use tree_sitter::{Tree, TreeCursor};
 
-use crate::cassandra::{
-    database::{ColumnDefinition, Table},
-    types::{CollectionType, PrimitiveType, Type},
+use crate::{
+    cassandra::{
+        database::{ColumnDefinition, Table},
+        types::{CollectionType, PrimitiveType, Type},
+    },
+    util::ast::move_to_node,
 };
 
 pub fn table_query(source: &str, node: &Tree) -> Result<Vec<Table>, ()> {
@@ -35,10 +38,17 @@ fn get_table_name(cursor: &mut TreeCursor<'_>, source: &str) -> Result<String, (
     cursor.goto_first_child();
     loop {
         if cursor.node().kind() == "table_name" {
-            let name = Ok(source[cursor.node().byte_range()].to_string());
+            let mut name = source[cursor.node().byte_range()].to_string();
+            if name.contains('.') {
+                let split = name.split('.').collect::<Vec<_>>();
+                match split.get(1) {
+                    Some(n) => name = n.to_string(),
+                    None => return Err(()),
+                }
+            }
             cursor.reset_to(&original_cursor);
             debug_assert_eq!(cursor.node().kind(), "create_table");
-            return name;
+            return Ok(name);
         }
         if !cursor.goto_next_sibling() {
             break;
@@ -64,13 +74,83 @@ fn move_to_column_definition_list(cursor: &mut TreeCursor<'_>) -> Result<(), ()>
     Err(())
 }
 
+#[derive(Debug, Clone, PartialEq)]
+enum Keys {
+    Single(String),
+    Compound(String, Vec<String>),
+    Composite(Vec<String>, Vec<String>),
+}
+
+fn parse_key_list(input: &str) -> Vec<String> {
+    input.split(',').map(|s| s.trim().to_string()).collect()
+}
+
+fn parse_key_single(input: &str) -> Option<Keys> {
+    let input = input.trim();
+    if input.chars().all(|c| c.is_alphanumeric()) {
+        Some(Keys::Single(input.to_string()))
+    } else {
+        None
+    }
+}
+
+fn parse_key_compound(input: &str) -> Option<Keys> {
+    let keys = parse_key_list(input);
+    if keys.len() > 1 {
+        let partition_key = keys[0].clone();
+        let clustering_keys = keys[1..].to_vec();
+        Some(Keys::Compound(partition_key, clustering_keys))
+    } else {
+        None
+    }
+}
+
+fn parse_key_composite(input: &str) -> Option<Keys> {
+    if let Some(p_open) = input.find('(') {
+        if let Some(p_close) = input.find(')') {
+            let partition_keys_segment = &input[p_open + 1..p_close];
+            let clustering_keys_segment = input[p_close + 1..].trim_start_matches(',').trim();
+
+            let partition_keys = parse_key_list(partition_keys_segment);
+            let clustering_keys = parse_key_list(clustering_keys_segment);
+            println!("p:{:#?}", partition_keys);
+            println!("c:{:#?}", clustering_keys);
+            if !partition_keys.is_empty() && !clustering_keys.is_empty() {
+                return Some(Keys::Composite(partition_keys, clustering_keys));
+            }
+        }
+    }
+    None
+}
+
+fn parse_primary_keys_clause(input: &str) -> Option<Keys> {
+    let input = input.trim();
+    if input.starts_with('(') {
+        parse_key_composite(input)
+    } else if input.contains(',') {
+        parse_key_compound(input)
+    } else {
+        parse_key_single(input)
+    }
+}
+
 fn get_column_definitions(
     cursor: &mut TreeCursor<'_>,
     source: &str,
 ) -> Result<Vec<ColumnDefinition>, ()> {
     debug_assert_eq!(cursor.node().kind(), "column_definition_list");
     let mut column_definitions = Vec::new();
+
+    let keys_cursor_snapshot = cursor.clone();
     cursor.goto_first_child();
+    let _ = move_to_node(cursor, "primary_key_element");
+    cursor.goto_first_child();
+    let _ = move_to_node(cursor, "primary_key_definition");
+    let keys = parse_primary_keys_clause(&source[cursor.node().byte_range()]);
+
+    cursor.reset_to(&keys_cursor_snapshot);
+    cursor.goto_first_child();
+
     loop {
         if cursor.node().kind() == "column_definition" {
             let name = source[cursor.node().byte_range()]
@@ -83,6 +163,18 @@ fn get_column_definitions(
             let original_cursor = cursor.clone();
 
             cursor.goto_first_child();
+            let primary_key_snapshot = cursor.clone();
+            let mut is_primary_key = false;
+            loop {
+                if cursor.node().kind() == "primary_key_column" {
+                    is_primary_key = true;
+                    break;
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+            cursor.reset_to(&primary_key_snapshot);
             loop {
                 if cursor.node().kind() == "data_type" {
                     break;
@@ -107,13 +199,54 @@ fn get_column_definitions(
             debug_assert_eq!(cursor.node().kind(), "cql_type");
 
             let type_ = parse_type(cursor, source)?;
-            let column_definition = ColumnDefinition::new(name.to_string(), type_);
+            let mut column_definition = ColumnDefinition::new(name.to_string(), type_);
+            column_definition.set_partition_key(is_primary_key);
             column_definitions.push(column_definition);
             cursor.reset_to(&original_cursor);
         }
 
         if !cursor.goto_next_sibling() {
             break;
+        }
+    }
+    if let Some(keys) = keys {
+        match keys {
+            Keys::Single(name) => {
+                if let Some(c) = column_definitions.iter_mut().find(|c| c.name() == name) {
+                    c.set_partition_key(true)
+                }
+            }
+            Keys::Compound(partition_key, clustering_keys) => {
+                if let Some(c) = column_definitions
+                    .iter_mut()
+                    .find(|c| c.name() == partition_key)
+                {
+                    c.set_partition_key(true);
+                }
+                for key in clustering_keys.iter() {
+                    if let Some(c) = column_definitions.iter_mut().find(|c| c.name() == key) {
+                        c.set_clustering_key(true);
+                    }
+                }
+            }
+            Keys::Composite(partition_keys, clustering_keys) => {
+                for partition_key in partition_keys.iter() {
+                    if let Some(c) = column_definitions
+                        .iter_mut()
+                        .find(|c| c.name() == partition_key)
+                    {
+                        c.set_partition_key(true);
+                    }
+                }
+                for clustering_key in clustering_keys.iter() {
+                    if let Some(c) = column_definitions
+                        .iter_mut()
+                        .find(|c| c.name() == clustering_key)
+                    {
+                        c.set_clustering_key(true);
+                    }
+                }
+            }
         }
     }
     Ok(column_definitions)
@@ -222,5 +355,45 @@ pub fn parse_type(cursor: &mut TreeCursor<'_>, source: &str) -> Result<Type, ()>
             })
         }
         _ => Err(()),
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_parse_single_key() {
+        assert_eq!(
+            parse_primary_keys_clause("a"),
+            Some(Keys::Single("a".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_parse_compound_key() {
+        assert_eq!(
+            parse_primary_keys_clause("a, b, c, d"),
+            Some(Keys::Compound(
+                "a".to_string(),
+                vec!["b", "c", "d"]
+                    .into_iter()
+                    .map(|c| c.to_string())
+                    .collect()
+            ))
+        )
+    }
+    #[test]
+    fn test_parse_composite_key() {
+        assert_eq!(
+            parse_primary_keys_clause("(a, b, c), d, e"),
+            Some(Keys::Composite(
+                vec!["a", "b", "c"]
+                    .into_iter()
+                    .map(|c| c.to_string())
+                    .collect(),
+                vec!["d", "e"].into_iter().map(|c| c.to_string()).collect()
+            ))
+        );
     }
 }

@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use uuid::Uuid;
+
 use crate::cassandra::types::Type;
 
 #[derive(Debug, Clone)]
@@ -41,6 +43,22 @@ impl Keyspace {
     }
     pub fn tables(&self) -> &Vec<Table> {
         &self.tables
+    }
+    pub fn table_by_uuid(&self, uuid: Uuid) -> Option<&Table> {
+        self.tables.iter().find(|&table| table.uuid == uuid)
+    }
+    pub fn coldef_by_uuid(&self, uuid: Uuid) -> Option<&ColumnDefinition> {
+        let mut column = None;
+        for table in self.tables.iter() {
+            column = table.columns.iter().find(|&column| column.uuid == uuid);
+            if column.is_some() {
+                break;
+            }
+        }
+        column
+    }
+    pub fn find_udt_definition(&self, udt_name: &str) -> Option<&Udt> {
+        self.udts.iter().find(|u| u.name == udt_name)
     }
 }
 
@@ -106,11 +124,17 @@ pub enum OrderBy {
 pub struct Table {
     name: String,
     columns: Vec<ColumnDefinition>,
+    uuid: Uuid,
 }
 
 impl Table {
     pub fn new(name: String, columns: Vec<ColumnDefinition>) -> Self {
-        Self { name, columns }
+        let uuid = Uuid::new_v4();
+        Self {
+            name,
+            columns,
+            uuid,
+        }
     }
 
     pub fn name(&self) -> &str {
@@ -118,6 +142,15 @@ impl Table {
     }
     pub fn columns(&self) -> &Vec<ColumnDefinition> {
         &self.columns
+    }
+    pub fn uuid(&self) -> Uuid {
+        self.uuid
+    }
+    pub fn primary_keys(&self) -> Vec<&ColumnDefinition> {
+        self.columns
+            .iter()
+            .filter(|column| column.partition_key)
+            .collect::<Vec<_>>()
     }
 }
 
@@ -128,16 +161,19 @@ pub struct ColumnDefinition {
     clustering_key: bool,
     clustering_order_by: Option<OrderBy>,
     r#type: Type,
+    uuid: Uuid,
 }
 
 impl ColumnDefinition {
     pub fn new(name: String, r#type: Type) -> Self {
+        let uuid = Uuid::new_v4();
         Self {
             name,
             r#type,
             clustering_key: false,
             clustering_order_by: None,
             partition_key: false,
+            uuid,
         }
     }
 
@@ -171,6 +207,9 @@ impl ColumnDefinition {
 
     pub fn r#type(&self) -> &Type {
         &self.r#type
+    }
+    pub fn uuid(&self) -> Uuid {
+        self.uuid
     }
 }
 

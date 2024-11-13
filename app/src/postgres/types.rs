@@ -1,15 +1,17 @@
-use crate::cassandra;
+use crate::cassandra::types::PrimitiveType as CPType;
+use crate::cassandra::types::Type as Ctype;
+
+use super::database::Table;
 
 #[derive(Debug, Clone)]
 pub enum Type {
-    Simple,
-    Enum(Vec<String>),
-    Pseudo,
-    Array(PrimitiveType),
-    Range(PrimitiveType),
-    Multirange(PrimitiveType),
-    Domain(PrimitiveType),
-    Composite(Vec<CompositeField>),
+    Simple(PrimitiveType),
+    Composite(String),
+    Array {
+        dimension: usize,
+        length: Option<Vec<usize>>,
+        r#type: Box<Type>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -65,30 +67,40 @@ pub enum PrimitiveType {
     Xml,
 }
 
-impl From<cassandra::types::PrimitiveType> for PrimitiveType {
-    fn from(value: cassandra::types::PrimitiveType) -> Self {
+impl From<CPType> for PrimitiveType {
+    fn from(value: CPType) -> Self {
         match value {
-            cassandra::types::PrimitiveType::Ascii => PrimitiveType::Text,
-            cassandra::types::PrimitiveType::Bigint => PrimitiveType::Bigint,
-            cassandra::types::PrimitiveType::Blob => PrimitiveType::Bytea,
-            cassandra::types::PrimitiveType::Boolean => PrimitiveType::Boolean,
-            cassandra::types::PrimitiveType::Counter => PrimitiveType::Serial,
-            cassandra::types::PrimitiveType::Date => PrimitiveType::Date,
-            cassandra::types::PrimitiveType::Decimal => PrimitiveType::Numeric(0, 0),
-            cassandra::types::PrimitiveType::Double => PrimitiveType::DoublePrecision,
-            cassandra::types::PrimitiveType::Duration => PrimitiveType::Interval,
-            cassandra::types::PrimitiveType::Float => PrimitiveType::Real,
-            cassandra::types::PrimitiveType::Inet => PrimitiveType::Inet,
-            cassandra::types::PrimitiveType::Int => PrimitiveType::Integer,
-            cassandra::types::PrimitiveType::Smallint => PrimitiveType::Smallint,
-            cassandra::types::PrimitiveType::Text => PrimitiveType::Text,
-            cassandra::types::PrimitiveType::Time => PrimitiveType::Time,
-            cassandra::types::PrimitiveType::Timestamp => PrimitiveType::Timestamp,
-            cassandra::types::PrimitiveType::TimeUuid => PrimitiveType::Uuid,
-            cassandra::types::PrimitiveType::Tinyint => PrimitiveType::Smallint,
-            cassandra::types::PrimitiveType::Uuid => PrimitiveType::Uuid,
-            cassandra::types::PrimitiveType::Varchar => PrimitiveType::CharacterVarying(0),
-            cassandra::types::PrimitiveType::Varint => PrimitiveType::Numeric(0, 0),
+            CPType::Ascii => PrimitiveType::Text,
+            CPType::Bigint => PrimitiveType::Bigint,
+            CPType::Blob => PrimitiveType::Bytea,
+            CPType::Boolean => PrimitiveType::Boolean,
+            CPType::Counter => PrimitiveType::Serial,
+            CPType::Date => PrimitiveType::Date,
+            CPType::Decimal => PrimitiveType::Numeric(0, 0),
+            CPType::Double => PrimitiveType::DoublePrecision,
+            CPType::Duration => PrimitiveType::Interval,
+            CPType::Float => PrimitiveType::Real,
+            CPType::Inet => PrimitiveType::Inet,
+            CPType::Int => PrimitiveType::Integer,
+            CPType::Smallint => PrimitiveType::Smallint,
+            CPType::Text => PrimitiveType::Text,
+            CPType::Time => PrimitiveType::Time,
+            CPType::Timestamp => PrimitiveType::Timestamp,
+            CPType::TimeUuid => PrimitiveType::Uuid,
+            CPType::Tinyint => PrimitiveType::Smallint,
+            CPType::Uuid => PrimitiveType::Uuid,
+            CPType::Varchar => PrimitiveType::CharacterVarying(0),
+            CPType::Varint => PrimitiveType::Numeric(0, 0),
+        }
+    }
+}
+
+impl TryFrom<Ctype> for Type {
+    type Error = ();
+    fn try_from(value: Ctype) -> Result<Self, Self::Error> {
+        match value {
+            Ctype::Primitive(primitive_type) => Ok(Type::Simple(primitive_type.into())),
+            Ctype::Collection { .. } | Ctype::Tuple(_) | Ctype::Udt { .. } => Err(()),
         }
     }
 }
