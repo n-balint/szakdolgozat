@@ -47,6 +47,11 @@ impl Keyspace {
     pub fn table_by_uuid(&self, uuid: Uuid) -> Option<&Table> {
         self.tables.iter().find(|&table| table.uuid == uuid)
     }
+    pub fn table_by_coldef_uuid(&self, uuid: Uuid) -> Option<&Table> {
+        self.tables
+            .iter()
+            .find(|table| table.columns.iter().any(|column| column.uuid == uuid))
+    }
     pub fn coldef_by_uuid(&self, uuid: Uuid) -> Option<&ColumnDefinition> {
         let mut column = None;
         for table in self.tables.iter() {

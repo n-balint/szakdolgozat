@@ -9,6 +9,7 @@ use cassandra::{
     migration::conversion::convert_keyspace_to_schema,
 };
 use eframe::{run_native, NativeOptions};
+use relations::FindRelations;
 use rfd::FileDialog;
 
 mod cassandra;
@@ -21,7 +22,7 @@ mod util;
 struct App {
     dump: String,
     parsed_data: Option<Keyspace>,
-    fd_files: Option<HashMap<String, PathBuf>>,
+    fd_files: Option<HashMap<String, File>>,
 }
 
 impl eframe::App for App {
@@ -82,24 +83,33 @@ impl eframe::App for App {
                 }
             }
             if let Some(ref res) = self.parsed_data {
-                let mut files = HashMap::new();
+                let mut files = self.fd_files.get_or_insert_with(HashMap::new);
                 res.tables().iter().for_each(|table| {
                     if ui
                         .button(format!("Load data for {}", table.name()))
                         .clicked()
                     {
-                        let file = FileDialog::new()
+                        if let Some(file) = FileDialog::new()
                             .add_filter("comma separated values", &["csv"])
                             .pick_file()
-                            .unwrap();
-                        files.insert(table.name().to_string(), file);
+                        {
+                            files.insert(table.name().to_string(), File::open(file).unwrap());
+                            println!("inserted key: {} value: ?", table.name(),);
+                        }
                     }
                 });
-                self.fd_files = Some(files);
             }
             if ui.button("test postgres conversion").clicked() {
                 if let Some(ref keyspace) = self.parsed_data {
                     print!("{:#?}", convert_keyspace_to_schema(keyspace).unwrap());
+                }
+            }
+            if ui.button("relations").clicked() {
+                println!("{:#?}", self.fd_files);
+                if let Some(ref filemap) = self.fd_files {
+                    let relation_finder =
+                        FindRelations::new(self.parsed_data.as_ref().unwrap(), filemap);
+                    relation_finder.run();
                 }
             }
         });

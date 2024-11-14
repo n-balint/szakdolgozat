@@ -41,6 +41,7 @@ pub fn convert_tables(schema: &mut Schema, keyspace: &Keyspace) -> Result<(), ()
     Ok(())
 }
 
+// TODO: composite conversion should happen into a child table
 fn convert_column_definition(
     schema: &mut Schema,
     postgres_table: &mut PTable,

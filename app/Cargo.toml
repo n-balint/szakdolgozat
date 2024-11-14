@@ -12,7 +12,8 @@ tree-sitter-sequel = "0.3.5"
 tree-sitter-cql = { path = "../tree-sitter-cql"}
 uuid = { version = "1.10.0", features = ["v4"] }
 tree-sitter = "0.22.6"
-polars = { version = "0.44.2", features = ["cum_agg", "is_unique", "approx_unique", "streaming"] }
+polars = { version = "0.44.2", features = ["cum_agg", "is_unique", "approx_unique", "streaming", "polars-ops"] }
+itertools = "0.13.0"
 
 [profile.dev]
 opt-level = 1
