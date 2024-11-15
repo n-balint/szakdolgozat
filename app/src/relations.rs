@@ -41,7 +41,7 @@ impl<'a> FindRelations<'a> {
         let mut relations = Relations::default();
         self.find_unique_columns(&mut relations);
         self.find_subset_columns(&mut relations);
-        println!("{:#?}", relations.unique_column);
+        println!("{:#?}", relations);
     }
 
     fn find_unique_columns(&self, relations: &mut Relations) {
@@ -72,16 +72,23 @@ impl<'a> FindRelations<'a> {
                     continue;
                 }
                 let column_data = dataframe.column(column_name).unwrap();
-                if column_data.unique().unwrap().len() == column_data.len() {
+                let unique_count = column_data.unique().unwrap().len();
+                let original_count = column_data.len();
+                if unique_count == original_count {
                     relations.unique_column.push(UniqueColumn {
                         table: table.name().to_string(),
                         column: column_name.trim().to_string(),
                         column_kind: ColumnKind::Unique,
                     });
+                } else {
+                    relations.column_uniqueness.push(ColumnUniqueness {
+                        unique_count,
+                        original_count,
+                        table_name: table.name().to_string(),
+                        column_name: column_name.to_string(),
+                    });
                 }
             }
-
-            println!("{}", dataframe);
         }
     }
 
@@ -136,7 +143,31 @@ impl<'a> FindRelations<'a> {
                 };
 
                 if is_subset {
-                    println!("found subset: {}, {}", left.name(), right.name());
+                    relations.subsets.push(SubsetColumn {
+                        // the unique will be an option and processed at a later time
+                        left: InnerSubsetColumn {
+                            table: self
+                                .keyspace
+                                .table_by_coldef_uuid(left.uuid())
+                                .unwrap()
+                                .name()
+                                .to_string(),
+                            column: left.name().to_string(),
+                            unique: false,
+                        },
+                        right: InnerSubsetColumn {
+                            table: self
+                                .keyspace
+                                .table_by_coldef_uuid(right.uuid())
+                                .unwrap()
+                                .name()
+                                .to_string(),
+                            column: right.name().to_string(),
+                            unique: false,
+                        },
+                        left_count,
+                        right_count,
+                    });
                 }
             }
         }
@@ -160,8 +191,8 @@ struct UniqueColumn {
 struct SubsetColumn {
     left: InnerSubsetColumn,
     right: InnerSubsetColumn,
-    left_count: u64,
-    right_count: u64,
+    left_count: usize,
+    right_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -171,11 +202,20 @@ struct InnerSubsetColumn {
     unique: bool,
 }
 
+#[derive(Debug, Clone)]
+struct ColumnUniqueness {
+    unique_count: usize,
+    original_count: usize,
+    table_name: String,
+    column_name: String,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Relations {
     unique_column: Vec<UniqueColumn>,
+    subsets: Vec<SubsetColumn>,
     foreign_keys: HashMap<(String, String), (String, String)>,
-    duplicate_columns: HashMap<(String, String), Vec<(String, String)>>,
+    column_uniqueness: Vec<ColumnUniqueness>,
 }
 
 impl Relations {
