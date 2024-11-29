@@ -83,6 +83,14 @@ impl Table {
     pub fn add_column(&mut self, column: ColumnDefinition) {
         self.columns.push(column);
     }
+    pub fn remove_column(&mut self, name: &str) {
+        match self.columns.iter().position(|column| column.name == name) {
+            Some(index) => {
+                self.columns.swap_remove(index);
+            }
+            None => (),
+        }
+    }
     pub fn primary_keys(&self) -> &Vec<String> {
         &self.primary_key
     }
@@ -144,6 +152,15 @@ impl ColumnDefinition {
     }
     pub fn set_uuid(&mut self, uuid: Uuid) {
         self.uuid = uuid;
+    }
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    pub fn r#type(&self) -> &Type {
+        &self.r#type
+    }
+    pub fn uuid(&self) -> Uuid {
+        self.uuid
     }
 }
 

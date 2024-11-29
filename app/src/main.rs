@@ -9,7 +9,8 @@ use cassandra::{
     migration::conversion::convert_keyspace_to_schema,
 };
 use eframe::{run_native, NativeOptions};
-use relations::FindRelations;
+use fd::CassandraDependency;
+use relations::{FindRelations, Relations};
 use rfd::FileDialog;
 
 mod cassandra;
@@ -99,18 +100,30 @@ impl eframe::App for App {
                     }
                 });
             }
-            if ui.button("test postgres conversion").clicked() {
-                if let Some(ref keyspace) = self.parsed_data {
-                    print!("{:#?}", convert_keyspace_to_schema(keyspace).unwrap());
-                }
-            }
+            //if ui.button("test postgres conversion").clicked() {
+            //    if let Some(ref keyspace) = self.parsed_data {
+            //        print!(
+            //            "{:#?}",
+            //            convert_keyspace_to_schema(keyspace, Relations {}).unwrap()
+            //        );
+            //    }
+            //}
             if ui.button("relations").clicked() {
                 println!("{:#?}", self.fd_files);
                 if let Some(ref filemap) = self.fd_files {
                     let relation_finder =
                         FindRelations::new(self.parsed_data.as_ref().unwrap(), filemap);
-                    relation_finder.run();
+                    let _ = relation_finder.run();
                 }
+            }
+            if ui.button("fds").clicked() {
+                let mut deps = CassandraDependency::new(
+                    self.fd_files.as_ref().unwrap(),
+                    self.parsed_data.as_ref().unwrap(),
+                );
+                deps.extract_dependencies();
+                println!("{:#?}", deps.stringify_dependencies());
+                deps.fd_count();
             }
         });
     }

@@ -710,7 +710,7 @@ module.exports = grammar({
         $.partition_key_list,
         ")",
         ",",
-        $.clustering_key_list
+        optional(seq(",", $.clustering_key_list))
       ),
     partition_key_list: $ => commaSep1($.object_name),
     with_element: $ => seq(kw("WITH"), $.table_options),

@@ -1,6 +1,7 @@
 use itertools::Itertools;
 use std::{
     collections::{HashMap, HashSet},
+    error::Error,
     fs::File,
 };
 
@@ -37,14 +38,16 @@ impl<'a> FindRelations<'a> {
             type_mapping,
         }
     }
-    pub fn run(&self) {
+    pub fn run(&self) -> Result<(), Box<dyn Error>> {
         let mut relations = Relations::default();
-        self.find_unique_columns(&mut relations);
-        self.find_subset_columns(&mut relations);
+        self.find_unique_columns(&mut relations)?;
+        self.find_subset_columns(&mut relations)?;
+        self.update_unqiue_subset_columns(&mut relations);
         println!("{:#?}", relations);
+        Ok(())
     }
 
-    fn find_unique_columns(&self, relations: &mut Relations) {
+    fn find_unique_columns(&self, relations: &mut Relations) -> Result<(), Box<dyn Error>> {
         for table in self.keyspace.tables().iter() {
             let primary_keys = table.primary_keys();
             let key_names = primary_keys
@@ -64,15 +67,14 @@ impl<'a> FindRelations<'a> {
                 .with_has_header(true)
                 .with_low_memory(true)
                 .into_reader_with_file_handle(file)
-                .finish()
-                .unwrap();
+                .finish()?;
 
             for column_name in dataframe.get_column_names() {
                 if key_names.contains(&column_name.trim().to_string()) {
                     continue;
                 }
-                let column_data = dataframe.column(column_name).unwrap();
-                let unique_count = column_data.unique().unwrap().len();
+                let column_data = dataframe.column(column_name)?;
+                let unique_count = column_data.unique()?.len();
                 let original_count = column_data.len();
                 if unique_count == original_count {
                     relations.unique_column.push(UniqueColumn {
@@ -80,53 +82,51 @@ impl<'a> FindRelations<'a> {
                         column: column_name.trim().to_string(),
                         column_kind: ColumnKind::Unique,
                     });
-                } else {
-                    relations.column_uniqueness.push(ColumnUniqueness {
-                        unique_count,
-                        original_count,
-                        table_name: table.name().to_string(),
-                        column_name: column_name.to_string(),
-                    });
                 }
             }
         }
+        Ok(())
     }
 
-    fn find_subset_columns(&self, relations: &mut Relations) {
-        for (&column_type, columns) in self.type_mapping.iter() {
+    fn find_subset_columns(&self, relations: &mut Relations) -> Result<(), Box<dyn Error>> {
+        for (_, columns) in self.type_mapping.iter() {
             for (&left, &right) in columns.iter().tuple_combinations() {
                 if left.uuid() == right.uuid() {
                     continue;
                 }
 
-                let left_table = self.keyspace.table_by_coldef_uuid(left.uuid()).unwrap();
-                let left_csv_file = self.csv_file[&left_table.name().to_string()]
-                    .try_clone()
-                    .unwrap();
-                let right_table = self.keyspace.table_by_coldef_uuid(right.uuid()).unwrap();
-                let right_csv_table = self.csv_file[&right_table.name().to_string()]
-                    .try_clone()
-                    .unwrap();
+                let left_table = self
+                    .keyspace
+                    .table_by_coldef_uuid(left.uuid())
+                    .expect("Column should be in the table.");
+                let left_csv_file = self.csv_file[&left_table.name().to_string()].try_clone()?;
+                let right_table = self
+                    .keyspace
+                    .table_by_coldef_uuid(right.uuid())
+                    .expect("Column should be in the table.");
+                let right_csv_table = self.csv_file[&right_table.name().to_string()].try_clone()?;
 
                 let left_dataframe = CsvReadOptions::default()
                     .with_has_header(true)
                     .with_low_memory(true)
                     .into_reader_with_file_handle(left_csv_file)
-                    .finish()
-                    .unwrap();
+                    .finish()?;
 
                 let right_dataframe = CsvReadOptions::default()
                     .with_has_header(true)
                     .with_low_memory(true)
                     .into_reader_with_file_handle(right_csv_table)
-                    .finish()
-                    .unwrap();
+                    .finish()?;
 
-                let left_column = left_dataframe.column(left.name()).unwrap().rechunk();
-                let right_column = right_dataframe.column(right.name()).unwrap().rechunk();
+                let left_column = left_dataframe.column(left.name())?.rechunk();
+                let right_column = right_dataframe.column(right.name())?.rechunk();
 
-                let left_series = left_column.as_series().unwrap();
-                let right_series = right_column.as_series().unwrap();
+                let left_series = left_column
+                    .as_series()
+                    .expect("After rechunking it should be able to be converted into a series.");
+                let right_series = right_column
+                    .as_series()
+                    .expect("After rechunking it should be able to be converted into a series.");
 
                 let left_count = left_series.len();
                 let right_count = right_series.len();
@@ -171,6 +171,32 @@ impl<'a> FindRelations<'a> {
                 }
             }
         }
+        Ok(())
+    }
+
+    fn update_unqiue_subset_columns(&self, relations: &mut Relations) {
+        let tables = self.keyspace.tables();
+        relations.subsets.iter_mut().for_each(|subset_column| {
+            subset_column.left.unique = tables
+                .iter()
+                .find(|&table| table.name() == subset_column.left.table)
+                .expect("Table should be in the keyspace")
+                .columns()
+                .iter()
+                .find(|&column_definition| column_definition.name() == subset_column.left.column)
+                .expect("Column should be in the table")
+                .partition_key();
+
+            subset_column.right.unique = tables
+                .iter()
+                .find(|&table| table.name() == subset_column.right.table)
+                .expect("Table should be in the keyspace")
+                .columns()
+                .iter()
+                .find(|&column_definition| column_definition.name() == subset_column.right.column)
+                .expect("Column should be in the table")
+                .partition_key();
+        });
     }
 }
 
@@ -188,7 +214,7 @@ struct UniqueColumn {
 }
 
 #[derive(Debug, Clone)]
-struct SubsetColumn {
+pub struct SubsetColumn {
     left: InnerSubsetColumn,
     right: InnerSubsetColumn,
     left_count: usize,
@@ -202,20 +228,10 @@ struct InnerSubsetColumn {
     unique: bool,
 }
 
-#[derive(Debug, Clone)]
-struct ColumnUniqueness {
-    unique_count: usize,
-    original_count: usize,
-    table_name: String,
-    column_name: String,
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct Relations {
     unique_column: Vec<UniqueColumn>,
     subsets: Vec<SubsetColumn>,
-    foreign_keys: HashMap<(String, String), (String, String)>,
-    column_uniqueness: Vec<ColumnUniqueness>,
 }
 
 impl Relations {
@@ -223,5 +239,9 @@ impl Relations {
         self.unique_column
             .iter()
             .any(|unique_column| unique_column.table == table && unique_column.column == column)
+    }
+
+    pub fn subsets(&self) -> &Vec<SubsetColumn> {
+        &self.subsets
     }
 }
