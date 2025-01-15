@@ -1,5 +1,3 @@
-use polars::frame::column;
-
 use crate::{
     cassandra::{
         database::{ColumnDefinition as CassandraColumn, Keyspace, Table as CTable},

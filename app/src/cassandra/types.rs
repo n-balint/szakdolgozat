@@ -77,7 +77,7 @@ impl TryFrom<&str> for PrimitiveType {
 
 impl std::fmt::Display for PrimitiveType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+        write!(f, "{}", format!("{:?}", self).to_uppercase())
     }
 }
 

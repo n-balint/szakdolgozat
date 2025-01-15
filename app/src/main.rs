@@ -10,13 +10,16 @@ use cassandra::{
 };
 use eframe::{run_native, NativeOptions};
 use fd::CassandraDependency;
+use query::Query;
 use relations::{FindRelations, Relations};
 use rfd::FileDialog;
 
 mod cassandra;
 mod fd;
 mod postgres;
+mod query;
 mod relations;
+mod ui;
 mod util;
 
 #[derive(Default)]
@@ -83,6 +86,10 @@ impl eframe::App for App {
                     }
                 }
             }
+            if ui.button("check query impl").clicked() {
+                let query_str = self.parsed_data.as_mut().unwrap().to_query_string();
+                println!("{}", query_str);
+            }
             if let Some(ref res) = self.parsed_data {
                 let mut files = self.fd_files.get_or_insert_with(HashMap::new);
                 res.tables().iter().for_each(|table| {
@@ -122,8 +129,13 @@ impl eframe::App for App {
                     self.parsed_data.as_ref().unwrap(),
                 );
                 deps.extract_dependencies();
-                println!("{:#?}", deps.stringify_dependencies());
-                deps.fd_count();
+                println!("{}", deps);
+                deps.print_dependencies();
+                for table in self.parsed_data.as_ref().unwrap().tables().iter() {
+                    println!("table: {}", table.name());
+                    let ckey = deps.find_candidate_keys_bf(table.name());
+                    println!("candidate key: {:#?}", ckey);
+                }
             }
         });
     }
@@ -141,4 +153,33 @@ fn main() {
         Box::new(|_cc| Ok(Box::<App>::default())),
     )
     .expect("Failed to create native window.");
+
+    // let (worker_tx, worker_rx) = channel::<Box<dyn Event<AppState = MyAppState> + Send>>();
+    // let (event_tx, event_rx) = channel::<Box<dyn Event<AppState = MyAppState> + Send>>();
+    // let (error_tx, error_rx) = channel::<Box<dyn Error + Send + Sync>>();
+
+    // let options = NativeOptions {
+    //     viewport: ViewportBuilder::default().with_inner_size([600.0, 800.0]),
+    //     ..Default::default()
+    // };
+
+    // std::thread::spawn(move || {
+    //     while let Ok(mut event) = worker_rx.recv() {
+    //         match event.handle() {
+    //             Ok(_) => {}
+    //             Err(e) => {
+    //                 println!("sending err");
+    //                 error_tx.send(e).unwrap();
+    //             }
+    //         }
+    //         event_tx.send(event).unwrap();
+    //     }
+    // });
+
+    // run_native(
+    //     "Valami",
+    //     options,
+    //     Box::new(|_cc| Ok(MyApp::new(worker_tx, event_rx, error_rx))),
+    // )
+    // .unwrap();
 }

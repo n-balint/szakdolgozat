@@ -5,7 +5,11 @@ use std::{
     fs::File,
 };
 
-use polars::{frame::column, io::SerReader, prelude::CsvReadOptions};
+use polars::{
+    frame::column,
+    io::SerReader,
+    prelude::{CsvReadOptions, DataType, Schema, SchemaRef},
+};
 
 use crate::cassandra::{
     database::{ColumnDefinition, Keyspace},
@@ -40,14 +44,14 @@ impl<'a> FindRelations<'a> {
     }
     pub fn run(&self) -> Result<(), Box<dyn Error>> {
         let mut relations = Relations::default();
-        self.find_unique_columns(&mut relations)?;
+        self.find_unique_columns(&mut relations);
         self.find_subset_columns(&mut relations)?;
         self.update_unqiue_subset_columns(&mut relations);
         println!("{:#?}", relations);
         Ok(())
     }
 
-    fn find_unique_columns(&self, relations: &mut Relations) -> Result<(), Box<dyn Error>> {
+    fn find_unique_columns(&self, relations: &mut Relations) {
         for table in self.keyspace.tables().iter() {
             let primary_keys = table.primary_keys();
             let key_names = primary_keys
@@ -62,30 +66,7 @@ impl<'a> FindRelations<'a> {
                     column_kind: ColumnKind::Key,
                 });
             }
-            let file = self.csv_file[table.name()].try_clone().unwrap();
-            let dataframe = CsvReadOptions::default()
-                .with_has_header(true)
-                .with_low_memory(true)
-                .into_reader_with_file_handle(file)
-                .finish()?;
-
-            for column_name in dataframe.get_column_names() {
-                if key_names.contains(&column_name.trim().to_string()) {
-                    continue;
-                }
-                let column_data = dataframe.column(column_name)?;
-                let unique_count = column_data.unique()?.len();
-                let original_count = column_data.len();
-                if unique_count == original_count {
-                    relations.unique_column.push(UniqueColumn {
-                        table: table.name().to_string(),
-                        column: column_name.trim().to_string(),
-                        column_kind: ColumnKind::Unique,
-                    });
-                }
-            }
         }
-        Ok(())
     }
 
     fn find_subset_columns(&self, relations: &mut Relations) -> Result<(), Box<dyn Error>> {
@@ -167,6 +148,7 @@ impl<'a> FindRelations<'a> {
                         },
                         left_count,
                         right_count,
+                        is_true: false,
                     });
                 }
             }
@@ -219,6 +201,7 @@ pub struct SubsetColumn {
     right: InnerSubsetColumn,
     left_count: usize,
     right_count: usize,
+    is_true: bool,
 }
 
 #[derive(Debug, Clone)]

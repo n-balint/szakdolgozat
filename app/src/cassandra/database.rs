@@ -1,8 +1,10 @@
 use std::collections::HashMap;
+use std::fmt::Write;
 
+use itertools::Itertools;
 use uuid::Uuid;
 
-use crate::cassandra::types::Type;
+use crate::{cassandra::types::Type, query::Query};
 
 #[derive(Debug, Clone)]
 pub struct Keyspace {
@@ -62,8 +64,122 @@ impl Keyspace {
         }
         column
     }
+
     pub fn find_udt_definition(&self, udt_name: &str) -> Option<&Udt> {
         self.udts.iter().find(|u| u.name == udt_name)
+    }
+
+    fn to_query_keyspace_segment(&self, r_query: &mut String) {
+        write!(r_query, "CREATE KEYSPACE {} ", self.name).unwrap();
+        write!(r_query, "WITH REPLICATION = ").unwrap();
+        match &self.replication.strategy {
+            Strategy::Simple(s) => {
+                write!(
+                    r_query,
+                    "{{ 'class': 'SimpleStrategy', 'replication_factor': {s} }}"
+                )
+                .unwrap();
+            }
+            Strategy::NetworkTopology(configuration) => {
+                write!(r_query, "{{ class: 'NetworkTopologyStrategy', ").unwrap();
+                let entry_count = configuration.len();
+                for (i, (k, v)) in configuration.iter().enumerate() {
+                    if i == entry_count - 1 {
+                        write!(r_query, "'{k}' : {v}").unwrap();
+                    } else {
+                        write!(r_query, "'{k}' : '{v}', ").unwrap();
+                    }
+                }
+                write!(r_query, "}}").unwrap();
+            }
+        }
+        if self.replication.durable_writes {
+            write!(r_query, " AND DURABLE_WRITES = true;").unwrap();
+        } else {
+            write!(r_query, " AND DURABLE_WRITES = false;").unwrap();
+        }
+    }
+
+    fn to_query_udts(&self, r_query: &mut String) {
+        for udt in self.udts.iter() {
+            write!(r_query, "CREATE TYPE {}.{} (", self.name, udt.name).unwrap();
+            writeln!(r_query).unwrap();
+            let field_len = udt.types.len();
+            for (field_idx, (field, type_)) in udt.types.iter().enumerate() {
+                if field_idx == field_len - 1 {
+                    write!(r_query, "\t{} {}", field, type_).unwrap();
+                } else {
+                    write!(r_query, "\t{} {},", field, type_).unwrap();
+                }
+            }
+            writeln!(r_query).unwrap();
+            write!(r_query, ");").unwrap();
+        }
+    }
+
+    fn to_query_tables(&self, r_query: &mut String) {
+        for table in self.tables.iter() {
+            let column_count = table.columns.len();
+            write!(r_query, "CREATE TABLE {}.{} (", self.name, table.name).unwrap();
+            writeln!(r_query).unwrap();
+            for (i, column) in table.columns.iter().enumerate() {
+                if i == column_count - 1 {
+                    writeln!(r_query, "\t{} {}", column.name, column.r#type).unwrap();
+                } else {
+                    writeln!(r_query, "\t{} {},", column.name, column.r#type).unwrap();
+                }
+            }
+            let clustering_keys = table
+                .columns()
+                .iter()
+                .filter(|c| c.clustering_key)
+                .collect::<Vec<_>>();
+            let partition_keys = table
+                .columns()
+                .iter()
+                .filter(|c| c.partition_key)
+                .collect::<Vec<_>>();
+
+            write!(r_query, "\tPRIMARY KEY ").unwrap();
+            if clustering_keys.is_empty() && partition_keys.len() == 1 {
+                write!(r_query, "({})", partition_keys[0].name).unwrap();
+            } else if partition_keys.len() > 1 && clustering_keys.is_empty() {
+                write!(
+                    r_query,
+                    "(({}))",
+                    partition_keys.iter().map(|c| c.name.clone()).join(", ")
+                )
+                .unwrap();
+            } else {
+                write!(
+                    r_query,
+                    "(({}), {})",
+                    partition_keys.iter().map(|c| c.name.clone()).join(", "),
+                    clustering_keys.iter().map(|c| c.name.clone()).join(", ")
+                )
+                .unwrap();
+            }
+
+            // TODO: Add clustering order by clauses.
+            writeln!(r_query).unwrap();
+            writeln!(r_query, ");").unwrap();
+            writeln!(r_query).unwrap();
+        }
+    }
+}
+
+impl Query for Keyspace {
+    fn to_query_string(&self) -> String {
+        let mut query = String::new();
+        let r_query = &mut query;
+        self.to_query_keyspace_segment(r_query);
+        writeln!(r_query).unwrap();
+        if !self.udts.is_empty() {
+            self.to_query_udts(r_query);
+        }
+        writeln!(r_query).unwrap();
+        self.to_query_tables(r_query);
+        query
     }
 }
 
