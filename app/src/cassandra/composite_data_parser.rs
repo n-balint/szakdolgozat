@@ -3,6 +3,37 @@ use std::collections::HashMap;
 /// Parses composite cassandra datatypes (maps, lists, tuples, sets, user defined types).
 pub struct CompositeDataParser {}
 
+/// Splits input on sep but not inside ''.
+/// Example: "['key', 'value', "pa,ir"]" -> ["'key'", "'value'", "pa,ir"]
+/// Normal split fn: "['key', 'value', "pa,ir"]" -> ["'key'", "'value'", "pa", "ir"]
+fn quote_aware_split(input: &str, sep: char) -> Vec<&str> {
+    let mut result = Vec::new();
+    let mut quoted = false;
+    let mut start = 0;
+
+    for (i, c) in input.char_indices() {
+        match c {
+            '\'' if !quoted => {
+                quoted = true;
+            }
+            '\'' if quoted => {
+                quoted = false;
+            }
+            _ if c == sep && !quoted => {
+                result.push(input[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+
+    if start < input.len() {
+        result.push(&input[start..]);
+    }
+
+    result
+}
+
 /// Works like trim_matches but only removes the first and last occurance of the character.
 fn trim_single_trailing(string: &str, pattern: char) -> &str {
     let mut start = 0;
@@ -14,7 +45,7 @@ fn trim_single_trailing(string: &str, pattern: char) -> &str {
         }
     }
 
-    if let Some(last) = string.chars().rev().next() {
+    if let Some(last) = string.chars().next_back() {
         if last == pattern {
             end -= last.len_utf8();
         }
@@ -32,8 +63,8 @@ impl CompositeDataParser {
             return Vec::new();
         }
 
-        trimmed
-            .split(',')
+        quote_aware_split(trimmed, ',')
+            .into_iter()
             .map(|s| trim_single_trailing(s.trim(), '\''))
             .collect()
     }
@@ -45,11 +76,11 @@ impl CompositeDataParser {
         if trimmed.is_empty() {
             return Vec::new();
         }
-        trimmed
-            .split(',')
+        quote_aware_split(trimmed, ',')
+            .into_iter()
             .filter_map(|kv| {
-                let key_value_pair = kv
-                    .splitn(2, ':')
+                let key_value_pair = quote_aware_split(kv, ':')
+                    .into_iter()
                     .map(|s| trim_single_trailing(s.trim(), '\''))
                     .collect::<Vec<&str>>();
                 if key_value_pair.len() == 2 {
@@ -68,8 +99,8 @@ impl CompositeDataParser {
         if trimmed.is_empty() {
             return Vec::new();
         }
-        trimmed
-            .split(',')
+        quote_aware_split(trimmed, ',')
+            .into_iter()
             .map(|s| trim_single_trailing(s.trim(), '\''))
             .collect()
     }
@@ -82,7 +113,7 @@ impl CompositeDataParser {
         if trimmed.is_empty() {
             return udt_map;
         }
-        for entry in trimmed.split(',') {
+        for entry in quote_aware_split(trimmed, ',') {
             if let Some((field_name, value)) = entry.split_once(':') {
                 udt_map.insert(
                     trim_single_trailing(field_name.trim(), '\''),
@@ -101,8 +132,9 @@ impl CompositeDataParser {
         if trimmed.is_empty() {
             return Vec::new();
         }
-        trimmed
-            .split(',')
+
+        quote_aware_split(trimmed, ',')
+            .into_iter()
             .map(|s| trim_single_trailing(s.trim(), '\''))
             .collect()
     }
@@ -126,7 +158,13 @@ mod test {
     }
 
     #[test]
-    fn parse_map_test() {}
+    fn parse_map_test() {
+        let parser = CompositeDataParser::new();
+        let input = r#"{'key': 3, 'other_key' : 4}"#;
+        let map = parser.parse_map_literal(input);
+        assert!(map.contains(&("key", "3")));
+        assert!(map.contains(&("other_key", "4")));
+    }
 
     #[test]
     fn parse_list_test() {
@@ -139,7 +177,13 @@ mod test {
     }
 
     #[test]
-    fn parse_set_test() {}
+    fn parse_set_test() {
+        let parser = CompositeDataParser::new();
+        let input = r#"{'first, second', 'third'}"#;
+        let set = parser.parse_set_literal(input);
+        assert!(set.contains(&"first, second"));
+        assert!(set.contains(&"third"));
+    }
 
     #[test]
     fn parse_udt_test() {}
