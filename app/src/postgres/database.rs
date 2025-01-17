@@ -84,11 +84,8 @@ impl Table {
         self.columns.push(column);
     }
     pub fn remove_column(&mut self, name: &str) {
-        match self.columns.iter().position(|column| column.name == name) {
-            Some(index) => {
-                self.columns.swap_remove(index);
-            }
-            None => (),
+        if let Some(index) = self.columns.iter().position(|column| column.name == name) {
+            self.columns.swap_remove(index);
         }
     }
     pub fn primary_keys(&self) -> &Vec<String> {

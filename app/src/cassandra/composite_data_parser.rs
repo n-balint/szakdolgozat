@@ -186,5 +186,24 @@ mod test {
     }
 
     #[test]
-    fn parse_udt_test() {}
+    fn parse_udt_test() {
+        let parser = CompositeDataParser::new();
+        let input = r#"{name: 'simple name', null_value: }"#;
+        let input2 = r#"{some: 7, val: , date: '2025-01-11'}"#;
+        let map = parser.parse_udt_literal(input);
+        println!("map: {:#?}", map);
+        let map2 = parser.parse_udt_literal(input2);
+        println!("map2: {:#?}", map2);
+        assert!(map.contains_key(&"name"));
+        assert_eq!(map["name"], "simple name");
+        assert!(map.contains_key(&"null_value"));
+        assert_eq!(map["null_value"], "");
+
+        assert!(map2.contains_key(&"some"));
+        assert_eq!(map2["some"], "7");
+        assert!(map2.contains_key(&"val"));
+        assert_eq!(map2["val"], "");
+        assert!(map2.contains_key(&"date"));
+        assert_eq!(map2["date"], "2025-01-11");
+    }
 }
