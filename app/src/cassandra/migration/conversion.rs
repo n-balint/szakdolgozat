@@ -18,8 +18,6 @@ pub(crate) fn convert_keyspace_to_schema(
     let mut schema = Schema::new(keyspace.name().to_string());
     convert_tables(&mut schema, keyspace)?;
 
-    for subset in relations.subsets().iter() {}
-
     Ok(schema)
 }
 
@@ -61,9 +59,11 @@ fn convert_column_definition(
             postgres_table.add_column(postgres_column);
         }
         CType::Collection { r#type, .. } => {
-            convert_collection(schema, postgres_table, r#type, cassandra_column)?
+            convert_collection(keyspace, schema, postgres_table, r#type, cassandra_column)?
         }
-        CType::Tuple(types) => convert_tuple(schema, postgres_table, types, cassandra_column)?,
+        CType::Tuple(types) => {
+            convert_tuple(keyspace, schema, postgres_table, types, cassandra_column)?
+        }
         CType::Udt {
             name,
             keyspace: keyspace_name,
@@ -133,6 +133,8 @@ fn convert_udt(
         .collect::<Vec<_>>();
 
     udt_table.add_foreign_key(ForeignKey::new(
+        keyspace.name().to_string(),
+        keyspace.name().to_string(),
         foreign_keys_name.clone(),
         postgres_table.name().to_string(),
         foreign_keys_name,
@@ -144,6 +146,7 @@ fn convert_udt(
 }
 
 fn convert_collection(
+    keyspace: &Keyspace,
     schema: &mut Schema,
     postgres_table: &mut PTable,
     collection_type: &CollectionType,
@@ -156,7 +159,9 @@ fn convert_collection(
         CollectionType::Map(key, value) => {
             convert_map(schema, postgres_table, key, value, cassandra_column)?
         }
-        CollectionType::Set(type_) => convert_set(schema, postgres_table, type_, cassandra_column)?,
+        CollectionType::Set(type_) => {
+            convert_set(keyspace, schema, postgres_table, type_, cassandra_column)?
+        }
     }
     Ok(())
 }
@@ -168,32 +173,15 @@ fn convert_list(
     cassandra_column: &CassandraColumn,
 ) -> Result<(), ()> {
     match type_ {
-        CType::Collection { .. } | CType::Tuple(..) => Err(()),
+        CType::Collection { .. } | CType::Tuple(..) | CType::Udt { .. } => Err(()),
         CType::Primitive(primitive_type) => {
             let mut column = PostgresColumn::new(
                 cassandra_column.name().to_string(),
-                PostgresType::Array {
-                    dimension: 1,
-                    length: None,
-                    r#type: Box::new(PostgresType::Simple((*primitive_type).into())),
-                },
+                PostgresType::Array((*primitive_type).into()),
             );
             column.set_uuid(cassandra_column.uuid());
             postgres_table.add_column(column);
 
-            Ok(())
-        }
-        CType::Udt { name, .. } => {
-            let mut column = PostgresColumn::new(
-                cassandra_column.name().to_string(),
-                PostgresType::Array {
-                    dimension: 1,
-                    length: None,
-                    r#type: Box::new(PostgresType::Composite(name.to_string())),
-                },
-            );
-            column.set_uuid(cassandra_column.uuid());
-            postgres_table.add_column(column);
             Ok(())
         }
     }
@@ -222,6 +210,7 @@ fn convert_map(
     Ok(())
 }
 fn convert_set(
+    keyspace: &Keyspace,
     schema: &mut Schema,
     postgres_table: &mut PTable,
     type_: &CType,
@@ -246,6 +235,8 @@ fn convert_set(
                 set_table.add_column(column.clone());
             }
             set_table.add_foreign_key(ForeignKey::new(
+                keyspace.name().to_string(),
+                keyspace.name().to_string(),
                 set_table.primary_keys().to_vec(),
                 postgres_table.name().to_string(),
                 postgres_table.primary_keys().to_vec(),
@@ -278,6 +269,7 @@ fn convert_set(
 }
 
 fn convert_tuple(
+    keyspace: &Keyspace,
     schema: &mut Schema,
     postgres_table: &mut PTable,
     cassandra_types: &[CType],
@@ -301,6 +293,8 @@ fn convert_tuple(
         if let Some(key_column) = postgres_table.retrieve_column(primary_key) {
             tuple_table.add_column(key_column.clone());
             tuple_table.add_foreign_key(ForeignKey::new(
+                keyspace.name().to_string(),
+                keyspace.name().to_string(),
                 primary_keys.to_vec(),
                 postgres_table.name().to_string(),
                 primary_keys.to_vec(),

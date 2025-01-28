@@ -9,6 +9,22 @@ pub struct Schema {
     name: String,
     tables: Vec<Table>,
     composites: Vec<CompositeType>,
+    enums: Vec<Enum>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Enum {
+    name: String,
+    values: Vec<String>,
+}
+
+impl Enum {
+    pub fn new(name: String, values: Vec<String>) -> Self {
+        Self { name, values }
+    }
+    pub fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 impl Schema {
@@ -17,6 +33,7 @@ impl Schema {
             name,
             tables: Vec::new(),
             composites: Vec::new(),
+            enums: Vec::new(),
         }
     }
     pub fn name(&self) -> &str {
@@ -24,6 +41,9 @@ impl Schema {
     }
     pub fn tables(&self) -> &Vec<Table> {
         &self.tables
+    }
+    pub fn add_enum(&mut self, enum_: Enum) {
+        self.enums.push(enum_);
     }
     pub fn add_table(&mut self, table: Table) {
         self.tables.push(table);
@@ -36,6 +56,9 @@ impl Schema {
     }
     pub fn add_composite(&mut self, composite: CompositeType) {
         self.composites.push(composite);
+    }
+    pub fn enums(&self) -> &Vec<Enum> {
+        &self.enums
     }
 }
 
@@ -116,8 +139,6 @@ pub struct ColumnDefinition {
     name: String,
     r#type: Type,
     nullable: bool,
-    default: Option<String>,
-    unique: bool,
     uuid: Uuid,
 }
 
@@ -127,8 +148,6 @@ impl ColumnDefinition {
             name,
             r#type: type_,
             nullable: false,
-            default: None,
-            unique: false,
             uuid: Uuid::new_v4(),
         }
     }
@@ -138,15 +157,10 @@ impl ColumnDefinition {
             name: cassandra_coldef.name().to_string(),
             r#type: type_,
             nullable: false,
-            default: None,
-            unique: false,
             uuid: cassandra_coldef.uuid(),
         }
     }
 
-    pub fn set_unique(&mut self, unique: bool) {
-        self.unique = unique;
-    }
     pub fn set_uuid(&mut self, uuid: Uuid) {
         self.uuid = uuid;
     }
@@ -163,29 +177,41 @@ impl ColumnDefinition {
 
 #[derive(Debug, Clone)]
 pub struct ForeignKey {
+    schema: String,
+    referenced_schema: String,
     column: Vec<String>,
     references_table: String,
     references_column: Vec<String>,
-    on_delete: Option<OnDelete>,
+    on_delete: Option<Action>,
+    on_update: Option<Action>,
 }
 
 impl ForeignKey {
     pub fn new(
+        schema: String,
+        referenced_schema: String,
         column: Vec<String>,
         references_table: String,
         references_column: Vec<String>,
     ) -> Self {
         Self {
+            schema,
+            referenced_schema,
             column,
             references_table,
             references_column,
             on_delete: None,
+            on_update: None,
         }
+    }
+
+    pub fn referenced_table(&self) -> &str {
+        &self.references_table
     }
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum OnDelete {
+pub enum Action {
     Cascade,
     SetNull,
     Restrict,
@@ -206,5 +232,13 @@ impl CompositeType {
     }
     pub fn add_field(&mut self, field: CompositeField) {
         self.fields.push(field);
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn fields(&self) -> &Vec<CompositeField> {
+        &self.fields
     }
 }

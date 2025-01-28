@@ -8,7 +8,7 @@ fn dedup(v: &mut Vec<String>) {
     v.retain(|x| set.insert(x.clone()));
 }
 
-fn parse_create_type_enum(source: &str, node: &Node) {
+pub fn parse_create_type_enum(source: &str, node: &Node) -> HashMap<String, Vec<String>> {
     let query_str = r#"
         (statement
           (create_type
@@ -49,9 +49,14 @@ fn parse_create_type_enum(source: &str, node: &Node) {
     for (_, v) in seen.iter_mut() {
         dedup(v);
     }
+
+    seen
 }
 
-fn parse_create_type_composite(source: &str, node: &Node) {
+pub fn parse_create_type_composite(
+    source: &str,
+    node: &Node,
+) -> HashMap<String, Vec<(String, String, String)>> {
     let query_str = r#"
         (statement
           (create_type
@@ -71,6 +76,8 @@ fn parse_create_type_composite(source: &str, node: &Node) {
     let captures = query_cursor.captures(&query, *node, source.as_bytes());
 
     let mut seen = HashSet::new();
+
+    let mut grouped_by_name: HashMap<String, Vec<(String, String, String)>> = HashMap::new();
 
     for (capture, _idx) in captures {
         let mut type_name = None;
@@ -103,7 +110,14 @@ fn parse_create_type_composite(source: &str, node: &Node) {
         }
     }
 
-    println!("{:#?}", seen);
+    for (type_name, field_name, field_type, array) in seen.into_iter() {
+        grouped_by_name
+            .entry(type_name)
+            .or_default()
+            .push((field_name, field_type, array));
+    }
+
+    grouped_by_name
 }
 
 #[cfg(test)]

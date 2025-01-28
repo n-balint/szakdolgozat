@@ -1,3 +1,5 @@
+use crate::postgres::types::{PrimitiveType as PostgresPrimitve, Type as PType};
+
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub enum PrimitiveType {
     Ascii,
@@ -21,6 +23,74 @@ pub enum PrimitiveType {
     Uuid,
     Varchar,
     Varint,
+}
+
+impl From<PostgresPrimitve> for PrimitiveType {
+    fn from(value: PostgresPrimitve) -> Self {
+        match value {
+            PostgresPrimitve::Bigint => Self::Bigint,
+            PostgresPrimitve::Bigserial => Self::Bigint,
+            PostgresPrimitve::Bit(_) => Self::Text,
+            PostgresPrimitve::BitVarying(_) => Self::Text,
+            PostgresPrimitve::Boolean => Self::Boolean,
+            PostgresPrimitve::Box => Self::Text,
+            PostgresPrimitve::Bytea => Self::Blob,
+            PostgresPrimitve::Character(_) => Self::Text,
+            PostgresPrimitve::CharacterVarying(_) => Self::Text,
+            PostgresPrimitve::Cidr => Self::Inet,
+            PostgresPrimitve::Circle => Self::Text,
+            PostgresPrimitve::Date => Self::Date,
+            PostgresPrimitve::DoublePrecision => Self::Double,
+            PostgresPrimitve::Inet => Self::Inet,
+            PostgresPrimitve::Integer => Self::Int,
+            PostgresPrimitve::Interval => Self::Duration,
+            PostgresPrimitve::Json => Self::Text,
+            PostgresPrimitve::Jsonb => Self::Text,
+            PostgresPrimitve::Line => Self::Text,
+            PostgresPrimitve::LSeg => Self::Text,
+            PostgresPrimitve::Macaddr => Self::Text,
+            PostgresPrimitve::Macaddr8 => Self::Text,
+            PostgresPrimitve::Money => Self::Decimal,
+            PostgresPrimitve::Numeric(_, _) => Self::Decimal,
+            PostgresPrimitve::Path => Self::Text,
+            PostgresPrimitve::PgLen => Self::Text,
+            PostgresPrimitve::PgSnapshot => Self::Text,
+            PostgresPrimitve::Point => Self::Text,
+            PostgresPrimitve::Polygon => Self::Text,
+            PostgresPrimitve::Real => Self::Float,
+            PostgresPrimitve::Smallint => Self::Smallint,
+            PostgresPrimitve::Smallserial => Self::Smallint,
+            PostgresPrimitve::Serial => Self::Int,
+            PostgresPrimitve::Text => Self::Text,
+            PostgresPrimitve::Time => Self::Time,
+            PostgresPrimitve::TimeWithTimezone => Self::Time,
+            PostgresPrimitve::Timestamp => Self::Timestamp,
+            PostgresPrimitve::TimestampWithTimezone => Self::Timestamp,
+            PostgresPrimitve::TsQuery => Self::Text,
+            PostgresPrimitve::TsVector => Self::Text,
+            PostgresPrimitve::TxIdSnapshot => Self::Text,
+            PostgresPrimitve::Uuid => Self::Uuid,
+            PostgresPrimitve::Xml => Self::Text,
+        }
+    }
+}
+
+impl From<PType> for Type {
+    fn from(value: PType) -> Self {
+        match value {
+            PType::Simple(primitive_type) => Self::Primitive(primitive_type.into()),
+            PType::Composite(name) => Self::Udt {
+                frozen: false,
+                name,
+                keyspace: "".to_string(),
+            },
+            PType::Array(primitive_type) => Self::Collection {
+                frozen: false,
+                r#type: CollectionType::List(Box::new(Type::Primitive(primitive_type.into()))),
+            },
+            PType::Enum(_) => Self::Primitive(PrimitiveType::Text),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]

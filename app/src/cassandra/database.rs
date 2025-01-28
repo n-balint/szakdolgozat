@@ -267,6 +267,9 @@ impl Table {
     pub fn uuid(&self) -> Uuid {
         self.uuid
     }
+    pub fn set_uuid(&mut self, uuid: Uuid) {
+        self.uuid = uuid;
+    }
     pub fn primary_keys(&self) -> Vec<&ColumnDefinition> {
         self.columns
             .iter()
@@ -331,6 +334,9 @@ impl ColumnDefinition {
     }
     pub fn uuid(&self) -> Uuid {
         self.uuid
+    }
+    pub fn set_uuid(&mut self, uuid: Uuid) {
+        self.uuid = uuid;
     }
 }
 

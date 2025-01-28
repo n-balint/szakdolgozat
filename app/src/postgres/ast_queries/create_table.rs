@@ -1,9 +1,8 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-use anyhow::anyhow;
 use tree_sitter::{Node, Query, QueryCursor};
 
-fn parse_create_table<'a>(source: &'a str, node: &Node) -> Result<&'a str, anyhow::Error> {
+pub fn parse_create_table(source: &str, node: &Node) -> HashMap<String, Vec<(String, String)>> {
     let query_str = r#"
     (statement
       (create_table
@@ -14,33 +13,55 @@ fn parse_create_table<'a>(source: &'a str, node: &Node) -> Result<&'a str, anyho
           (column_definition
             name: (identifier)@column_name
             type: (_)@type))))"#;
-    let mut schema = Vec::new();
-    let mut table = Vec::new();
-    let mut name = Vec::new();
-    let mut type_ = Vec::new();
     let mut seen = HashSet::new();
+    let mut grouped_by_table: HashMap<String, Vec<_>> = HashMap::new();
     let query = Query::new(&tree_sitter_sequel::language(), query_str).unwrap();
     let mut query_cursor = QueryCursor::new();
     let captures = query_cursor.captures(&query, *node, source.as_bytes());
+
     for (capture, _idx) in captures {
-        for (i, m) in capture.captures.iter().enumerate() {
-            let inner = &source[m.node.byte_range()];
-            match i {
-                0 => schema.push(inner),
-                1 => table.push(inner),
-                2 => name.push(inner),
-                3 => type_.push(inner),
-                _ => panic!(),
-            };
+        let mut schema_name = None;
+        let mut table_name = None;
+        let mut column_name = None;
+        let mut type_ = None;
+
+        for m in capture.captures.iter() {
+            let capture_name = query.capture_names()[m.index as usize];
+            let value = source[m.node.byte_range()].to_string();
+
+            match capture_name {
+                "schema_name" => schema_name = Some(value),
+                "table_name" => table_name = Some(value),
+                "column_name" => column_name = Some(value),
+                "type" => {
+                    type_ = Some(
+                        value
+                            .trim_end_matches(|c: char| c == '(' || c == ')' || c.is_ascii_digit())
+                            .to_string(),
+                    )
+                }
+                _ => panic!("Found unknown capture target."),
+            }
+        }
+
+        if let (Some(schema_name), Some(table_name), Some(column_name), Some(type_)) =
+            (schema_name, table_name, column_name, type_)
+        {
+            let entry = (schema_name, table_name, column_name, type_);
+            if !seen.contains(&entry) {
+                seen.insert(entry);
+            }
         }
     }
-    for i in 0..schema.len() {
-        let item = (schema[i], table[i], name[i], type_[i]);
-        if seen.insert(item) {
-            println!("{}.{} {} | {}", schema[i], table[i], name[i], type_[i]);
-        }
+
+    for (_schema_name, table_name, column_name, type_) in seen {
+        grouped_by_table
+            .entry(table_name)
+            .or_default()
+            .push((column_name, type_));
     }
-    Ok("")
+
+    grouped_by_table
 }
 
 #[cfg(test)]

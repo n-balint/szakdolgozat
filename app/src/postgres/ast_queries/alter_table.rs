@@ -2,7 +2,10 @@ use std::collections::{HashMap, HashSet};
 
 use tree_sitter::{Node, Query, QueryCursor};
 
-fn parse_alter_table_primary_key(source: &str, node: &Node) {
+pub fn parse_alter_table_primary_key(
+    source: &str,
+    node: &Node,
+) -> HashMap<(String, String), Vec<String>> {
     let query_str = r#"
         (statement
           (alter_table
@@ -53,9 +56,14 @@ fn parse_alter_table_primary_key(source: &str, node: &Node) {
             }
         }
     }
+
+    table_keys
 }
 
-fn parse_alter_table_foreign_key(source: &str, node: &Node) {
+pub fn parse_alter_table_foreign_key(
+    source: &str,
+    node: &Node,
+) -> HashMap<(String, String, String, String), (HashSet<String>, HashSet<String>)> {
     let query_str = r#"
         (statement
           (alter_table
@@ -139,7 +147,7 @@ fn parse_alter_table_foreign_key(source: &str, node: &Node) {
         tuple.1.insert(ref_column);
     }
 
-    println!("{:#?}", column_mapping);
+    column_mapping
 }
 
 #[cfg(test)]

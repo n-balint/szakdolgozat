@@ -4,6 +4,7 @@ use std::{
 };
 
 pub mod parse_keyspace_event;
+pub mod parse_schema_event;
 
 pub trait Event {
     type AppState;

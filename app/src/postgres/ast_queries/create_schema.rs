@@ -1,7 +1,7 @@
 use anyhow::anyhow;
 use tree_sitter::{Node, Query, QueryCursor};
 
-fn parse_create_schema<'a>(source: &'a str, node: &Node) -> Result<&'a str, anyhow::Error> {
+pub fn parse_create_schema<'a>(source: &'a str, node: &Node) -> Result<&'a str, anyhow::Error> {
     let query_str = "(statement (create_schema (identifier) @schema_name))";
     let query = Query::new(&tree_sitter_sequel::language(), query_str).unwrap();
     let mut query_cursor = QueryCursor::new();

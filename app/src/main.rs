@@ -1,29 +1,10 @@
-use std::{
-    borrow::BorrowMut,
-    collections::HashMap,
-    fs::File,
-    io::Read,
-    path::PathBuf,
-    sync::{atomic::Ordering, mpsc::channel, Arc},
-};
+use std::sync::{atomic::Ordering, mpsc::channel, Arc};
 
-use cassandra::{
-    ast_queries::{
-        create_type_queries::udt_query, keyspace_queries::keyspace_query, parse_database,
-        table_queries::table_query,
-    },
-    database::Keyspace,
-    migration::conversion::convert_keyspace_to_schema,
-};
 use eframe::{run_native, NativeOptions};
 use egui::ViewportBuilder;
 use env_logger::fmt::TimestampPrecision;
 use events::Event;
-use fd::CassandraDependency;
 use log::{debug, info};
-use query::Query;
-use relations::{FindRelations, Relations};
-use rfd::FileDialog;
 use std::error::Error;
 use ui::{App, MigrateAppState};
 

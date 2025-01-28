@@ -15,7 +15,11 @@ use egui::{CentralPanel, ComboBox, Ui};
 use log::debug;
 use rfd::FileDialog;
 
-use crate::{cassandra::database::Keyspace, events::Event};
+use crate::{
+    cassandra::database::Keyspace,
+    events::{parse_schema_event::ParseSchemaEvent, Event},
+    postgres::conversion::KeyspaceConverter,
+};
 use crate::{events::parse_keyspace_event::ParseKeyspaceEvent, postgres::database::Schema};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,6 +128,7 @@ pub struct MigrateAppState {
     pub cassandra_data_dump: Option<PathBuf>,
     pub schema: Option<Schema>,
     pub postgres_dump: Option<PathBuf>,
+    pub keyspace_converter: Option<KeyspaceConverter>,
 }
 
 impl MigrateAppState {
@@ -134,6 +139,7 @@ impl MigrateAppState {
             cassandra_dump: None,
             cassandra_data_dump: None,
             postgres_dump: None,
+            keyspace_converter: None,
         }
     }
 }
@@ -271,13 +277,18 @@ impl App {
                         .pick_file();
                     if let Some(path) = picker {
                         self.app_state.postgres_dump = Some(path);
-                        self.conversion_direction = Some(ConversionDirection::PostgresToCassandra(
-                            CassandraConversionState::SelectDuplicatingColumns,
-                        ));
+                        debug!("Got path: {:#?}", self.app_state.cassandra_dump);
+                        let parse_event = ParseSchemaEvent::new(
+                            self.app_state.postgres_dump.clone().expect("Impossible."),
+                            self.app_state.clone(),
+                        );
+                        self.worker_tx.send(Box::new(parse_event)).unwrap();
+                        self.conversion_direction =
+                            Some(ConversionDirection::PostgresToCassandra(state.next()));
                     }
                 }
             }
-            CassandraConversionState::SelectDuplicatingColumns => todo!(),
+            CassandraConversionState::SelectDuplicatingColumns => {}
             CassandraConversionState::MigrateToCassandra => todo!(),
         }
     }
