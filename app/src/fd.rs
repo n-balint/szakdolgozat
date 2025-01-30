@@ -2,13 +2,17 @@ use std::{
     collections::{BTreeSet, HashMap, HashSet},
     fmt::write,
     fs::File,
+    path::PathBuf,
 };
 
 use csv::{Reader, ReaderBuilder};
 use itertools::Itertools;
 use ndarray::Array2;
 
-use crate::cassandra::database::Keyspace;
+use crate::{
+    cassandra::database::Keyspace,
+    postgres::database::{ColumnDefinition, Schema, Table},
+};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum DependencyKind {
@@ -33,7 +37,6 @@ impl std::fmt::Display for DependencyKind {
 #[derive(Debug, Clone)]
 struct DependencyMatrix {
     lut: HashMap<BTreeSet<usize>, usize>,
-    //inverse_lut: HashMap<usize, BTreeSet<usize>>,
     matrix: Array2<Option<DependencyKind>>,
 }
 
@@ -41,20 +44,12 @@ impl DependencyMatrix {
     fn new(attribute_count: usize) -> Self {
         let matrix = Array2::from_elem((1 << attribute_count, attribute_count), None);
         let mut lut = HashMap::new();
-        //let mut inverse_lut = HashMap::new();
 
         let indeces = (0..attribute_count).collect();
         for (row, subset) in SubsetIterator::new(indeces).enumerate() {
             lut.insert(subset, row);
         }
-        //for (k, &v) in lut.iter() {
-        //    inverse_lut.insert(v, k.clone());
-        //}
-        Self {
-            lut,
-            //    inverse_lut,
-            matrix,
-        }
+        Self { lut, matrix }
     }
 
     fn set_dependency(&mut self, lhs: &BTreeSet<usize>, rhs: usize, value: DependencyKind) {
@@ -190,62 +185,28 @@ impl Iterator for SubsetIterator {
 }
 
 #[derive(Debug, Clone)]
-pub struct CassandraDependency<'a> {
-    files: &'a HashMap<String, File>,
-    keyspace: &'a Keyspace,
+pub struct DependencyInference {
+    schema: Schema,
     fds: HashMap<String, DependencyMatrix>,
+    folder: PathBuf,
+    partial_dependencies: HashMap<String, Vec<(BTreeSet<usize>, usize)>>,
+    transitive_dependencies: HashMap<String, Vec<(BTreeSet<usize>, usize)>>,
 }
 
-impl<'a> std::fmt::Display for CassandraDependency<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for (name, matrix) in self.fds.iter() {
-            writeln!(f, "{}", name)?;
-            write!(f, "{}", matrix)?;
-        }
-        Ok(())
-    }
-}
-
-impl<'a> CassandraDependency<'a> {
-    pub(crate) fn new(files: &'a HashMap<String, File>, keyspace: &'a Keyspace) -> Self {
+impl DependencyInference {
+    pub(crate) fn new(schema: Schema, folder: PathBuf) -> Self {
         let mut fds = HashMap::new();
-        for table in keyspace.tables().iter() {
+        for table in schema.tables().iter() {
             let matrix = DependencyMatrix::new(table.columns().len());
             fds.insert(table.name().to_string(), matrix);
         }
-        println!("{:#?}", fds);
         Self {
-            files,
-            keyspace,
+            schema,
             fds,
+            folder,
+            partial_dependencies: HashMap::new(),
+            transitive_dependencies: HashMap::new(),
         }
-    }
-
-    pub fn print_dependencies(&self) {
-        for (name, matrix) in self.fds.iter() {
-            println!("{}", name);
-            matrix.print_dependencies();
-        }
-    }
-
-    fn find_candidate_keys_from_table() {
-        todo!()
-    }
-
-    pub fn find_candidate_keys_bf(&self, table_name: &str) -> Vec<BTreeSet<usize>> {
-        let attribute_count = self.fds[table_name].matrix.shape()[1];
-        let attributes = (0..attribute_count).collect::<BTreeSet<_>>();
-
-        let mut candidate_keys: Vec<BTreeSet<usize>> = Vec::new();
-
-        for subset in SubsetIterator::new(attributes.iter().cloned().collect()) {
-            let closure = self.calculate_closure(&subset, table_name);
-            if closure == attributes && candidate_keys.iter().all(|key| !key.is_subset(&subset)) {
-                candidate_keys.push(subset);
-            }
-        }
-
-        candidate_keys
     }
 
     fn calculate_closure(&self, attributes: &BTreeSet<usize>, table_name: &str) -> BTreeSet<usize> {
@@ -273,13 +234,30 @@ impl<'a> CassandraDependency<'a> {
         closure
     }
 
+    pub fn find_candidate_keys_bf(&self, table_name: &str) -> Vec<BTreeSet<usize>> {
+        let attribute_count = self.fds[table_name].matrix.shape()[1];
+        let attributes = (0..attribute_count).collect::<BTreeSet<_>>();
+
+        let mut candidate_keys: Vec<BTreeSet<usize>> = Vec::new();
+
+        for subset in SubsetIterator::new(attributes.iter().cloned().collect()) {
+            let closure = self.calculate_closure(&subset, table_name);
+            if closure == attributes && candidate_keys.iter().all(|key| !key.is_subset(&subset)) {
+                candidate_keys.push(subset);
+            }
+        }
+
+        candidate_keys
+    }
+
     pub(crate) fn extract_dependencies(&mut self) {
-        for table in self.keyspace.tables().iter() {
+        for table in self.schema.tables().iter() {
             let mut reader = ReaderBuilder::new()
                 .has_headers(true)
                 .quote(b'\"')
-                .escape(Some(b'\\'))
-                .from_reader(self.files[table.name()].try_clone().unwrap());
+                .escape(Some(b'\"'))
+                .from_path(self.folder.join(format!("{}.IR", table.name())))
+                .unwrap();
 
             let start_position = reader.position().clone();
             let column_indices: Vec<usize> = (0..table.columns().len()).collect();
@@ -350,5 +328,133 @@ impl<'a> CassandraDependency<'a> {
             }
         }
         true
+    }
+
+    pub fn print_dependencies(&self) {
+        for (name, matrix) in self.fds.iter() {
+            println!("{}", name);
+            matrix.print_dependencies();
+        }
+    }
+
+    pub fn is_in_2nf(&mut self) -> bool {
+        let mut partial_dependencies: HashMap<String, Vec<(BTreeSet<usize>, usize)>> =
+            HashMap::new();
+        for table_name in self.schema.tables().iter().map(|t| t.name()) {
+            let candidate_keys = self.find_candidate_keys_bf(table_name);
+            let dependency_matrix = &self.fds[table_name];
+
+            let all_attributes = (0..dependency_matrix.matrix.shape()[1]).collect::<BTreeSet<_>>();
+
+            let prime_attributes = candidate_keys
+                .iter()
+                .flatten()
+                .copied()
+                .collect::<BTreeSet<_>>();
+
+            let non_prime_attributes = all_attributes
+                .difference(&prime_attributes)
+                .collect::<BTreeSet<_>>();
+
+            for (lhs, &row) in dependency_matrix.lut.iter() {
+                if lhs.len() > 1 {
+                    for &&rhs in non_prime_attributes.iter() {
+                        if let Some(DependencyKind::Yes) = dependency_matrix.matrix[[row, rhs]] {
+                            for candidate_key in candidate_keys.iter() {
+                                if lhs.is_subset(candidate_key) && lhs.len() < candidate_key.len() {
+                                    partial_dependencies
+                                        .entry(table_name.to_string())
+                                        .or_default()
+                                        .push((lhs.clone(), rhs));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.partial_dependencies = partial_dependencies;
+        self.partial_dependencies.is_empty()
+    }
+
+    pub fn convert_to_2nf(&mut self) {
+        // Take the partial dependencies, fetch the column definitions for each
+        // Create a new table with the original's primary key (also implement to check if the
+        // original primary key is actually minimal)
+        // Make a set from these columns
+        // add them to the table
+        // add the primary key to the table with a foreign key link
+        // set the columns to backlink to the original
+        todo!()
+    }
+
+    pub fn is_in_3nf(&mut self) -> bool {
+        let mut transitive_dependencies: HashMap<String, Vec<(BTreeSet<usize>, usize)>> =
+            HashMap::new();
+
+        for table_name in self.schema.tables().iter().map(|t| t.name()) {
+            let candidate_keys = self.find_candidate_keys_bf(table_name);
+            let dependency_matrix = &self.fds[table_name];
+
+            let all_attributes = (0..dependency_matrix.matrix.shape()[1]).collect::<BTreeSet<_>>();
+
+            let prime_attributes = candidate_keys
+                .iter()
+                .flatten()
+                .copied()
+                .collect::<BTreeSet<_>>();
+
+            let non_prime_attributes = all_attributes
+                .difference(&prime_attributes)
+                .copied()
+                .collect::<BTreeSet<_>>();
+
+            for (lhs, &row) in dependency_matrix.lut.iter() {
+                if lhs.len() == 1 && prime_attributes.contains(lhs.iter().next().unwrap()) {
+                    continue;
+                }
+
+                for &rhs in &non_prime_attributes {
+                    if let Some(DependencyKind::Yes) = dependency_matrix.matrix[[row, rhs]] {
+                        let closure = self.calculate_closure(lhs, table_name);
+                        if !closure.contains(&rhs) {
+                            continue;
+                        }
+
+                        let is_superkey = candidate_keys.iter().any(|k| lhs.is_superset(k));
+                        if !is_superkey {
+                            transitive_dependencies
+                                .entry(table_name.to_string())
+                                .or_default()
+                                .push((lhs.clone(), rhs));
+                        }
+                    }
+                }
+            }
+        }
+
+        self.transitive_dependencies = transitive_dependencies;
+        println!("{:#?}", self.transitive_dependencies);
+        self.transitive_dependencies.is_empty()
+    }
+
+    pub fn convert_to_3nf(&mut self) {
+        // Take the transitive dependencies, fetch the column definitions for each
+        // Create a new table with the original's primary key (also implement to check if the
+        // original primary key is actually minimal)
+        // Make a set from these columns
+        // add them to the table
+        // add the primary key to the table with a foreign key link
+        // set the columns to backlink to the original
+    }
+}
+
+impl std::fmt::Display for DependencyInference {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (name, matrix) in self.fds.iter() {
+            writeln!(f, "{}", name)?;
+            write!(f, "{}", matrix)?;
+        }
+        Ok(())
     }
 }

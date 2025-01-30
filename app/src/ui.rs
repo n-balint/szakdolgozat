@@ -16,8 +16,12 @@ use log::debug;
 use rfd::FileDialog;
 
 use crate::{
-    cassandra::database::Keyspace,
+    cassandra::{
+        database::Keyspace,
+        migration::{conversion::convert_keyspace_to_schema, schema_ir::generate_schema_ir},
+    },
     events::{parse_schema_event::ParseSchemaEvent, Event},
+    fd::DependencyInference,
     postgres::conversion::KeyspaceConverter,
 };
 use crate::{events::parse_keyspace_event::ParseKeyspaceEvent, postgres::database::Schema};
@@ -197,6 +201,34 @@ impl eframe::App for App {
             if ui.button("state").clicked() {
                 println!("{:#?}", self);
             }
+            // TEMP SEGMENT
+            if ui.button("test postgresify").clicked() {
+                let schema = convert_keyspace_to_schema(
+                    self.app_state.keyspace.as_ref().unwrap(),
+                    Default::default(),
+                )
+                .unwrap();
+                self.app_state.schema = Some(schema);
+            }
+            if ui.button("folder_magic").clicked() {
+                let folder = FileDialog::new().pick_folder();
+                generate_schema_ir(
+                    self.app_state.keyspace.as_ref().unwrap(),
+                    self.app_state.schema.as_ref().unwrap(),
+                    folder.as_ref().unwrap(),
+                )
+                .unwrap();
+                let mut deps = DependencyInference::new(
+                    self.app_state.schema.clone().unwrap(),
+                    folder.unwrap(),
+                );
+                deps.extract_dependencies();
+                deps.print_dependencies();
+                println!("2nf: {}", deps.is_in_2nf());
+                println!("3nf: {}", deps.is_in_3nf());
+                println!("{}", deps);
+            }
+            // END TEMP SEGMENT
             match self.conversion_direction {
                 Some(conversion_direction) => match conversion_direction {
                     ConversionDirection::CassandraToPostgres(state) => {

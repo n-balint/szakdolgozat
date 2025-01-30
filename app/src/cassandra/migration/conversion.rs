@@ -88,10 +88,6 @@ fn convert_udt(
     keyspace_name: &str,
     cassandra_column: &CassandraColumn,
 ) -> Result<(), ()> {
-    if keyspace.name() != keyspace_name {
-        return Err(());
-    }
-
     let udt_definition = keyspace.find_udt_definition(name).ok_or(())?;
     let mut udt_table = PTable::new(format!(
         "{}_{}",
@@ -175,12 +171,38 @@ fn convert_list(
     match type_ {
         CType::Collection { .. } | CType::Tuple(..) | CType::Udt { .. } => Err(()),
         CType::Primitive(primitive_type) => {
-            let mut column = PostgresColumn::new(
-                cassandra_column.name().to_string(),
-                PostgresType::Array((*primitive_type).into()),
+            let mut converted_table = PTable::new(cassandra_column.name().to_string());
+            let mut list_item_column = PostgresColumn::new(
+                "list_item".to_string(),
+                PostgresType::Simple((*primitive_type).into()),
             );
-            column.set_uuid(cassandra_column.uuid());
-            postgres_table.add_column(column);
+            list_item_column.set_uuid(cassandra_column.uuid());
+            converted_table.add_column(list_item_column);
+
+            for key in postgres_table.primary_keys() {
+                let key_column_definition =
+                    postgres_table.retrieve_column(key).expect("Logic error.");
+                if let PostgresType::Simple(primitive) = key_column_definition.r#type() {
+                    let mut key_column =
+                        PostgresColumn::new(key.to_string(), PostgresType::Simple(*primitive));
+                    key_column.set_uuid(key_column_definition.uuid());
+                    converted_table.add_column(key_column);
+
+                    converted_table.add_primary_key(key.to_string());
+                } else {
+                    return Err(());
+                }
+            }
+            let foreign_columns = postgres_table.primary_keys().to_vec();
+            converted_table.add_foreign_key(ForeignKey::new(
+                schema.name().to_string(),
+                schema.name().to_string(),
+                foreign_columns.clone(),
+                postgres_table.name().to_string(),
+                foreign_columns,
+            ));
+
+            schema.add_table(converted_table);
 
             Ok(())
         }
@@ -194,19 +216,57 @@ fn convert_map(
     cassandra_column: &CassandraColumn,
 ) -> Result<(), ()> {
     match key {
-        CType::Primitive(..) | CType::Udt { .. } => (),
-        CType::Collection { .. } | CType::Tuple(..) => return Err(()),
+        CType::Primitive(..) => (),
+        CType::Collection { .. } | CType::Tuple(..) | CType::Udt { .. } => return Err(()),
     }
     match value {
-        CType::Primitive(..) | CType::Udt { .. } => (),
-        CType::Collection { .. } | CType::Tuple(..) => return Err(()),
+        CType::Primitive(..) => (),
+        CType::Collection { .. } | CType::Tuple(..) | CType::Udt { .. } => return Err(()),
     }
-    let mut column = PostgresColumn::new(
-        cassandra_column.name().to_string(),
-        PostgresType::Simple(PostgresPrimitive::Jsonb),
-    );
-    column.set_uuid(cassandra_column.uuid());
-    postgres_table.add_column(column);
+    let mut converted_table = PTable::new(cassandra_column.name().to_string());
+    if let CType::Primitive(primitive_key) = key {
+        let mut key_column = PostgresColumn::new(
+            "key".to_string(),
+            PostgresType::Simple((*primitive_key).into()),
+        );
+        key_column.set_uuid(cassandra_column.uuid());
+        converted_table.add_column(key_column);
+        if let CType::Primitive(primitive_value) = value {
+            let mut value_column = PostgresColumn::new(
+                "value".to_string(),
+                PostgresType::Simple((*primitive_value).into()),
+            );
+            value_column.set_uuid(cassandra_column.uuid());
+            converted_table.add_column(value_column);
+        } else {
+            return Err(());
+        }
+
+        for key in postgres_table.primary_keys() {
+            let key_column_definition = postgres_table.retrieve_column(key).expect("Logic error.");
+            if let PostgresType::Simple(primitive) = key_column_definition.r#type() {
+                let mut key_column =
+                    PostgresColumn::new(key.to_string(), PostgresType::Simple(*primitive));
+                key_column.set_uuid(key_column_definition.uuid());
+                converted_table.add_column(key_column);
+
+                converted_table.add_primary_key(key.to_string());
+            } else {
+                return Err(());
+            }
+        }
+        let foreign_columns = postgres_table.primary_keys().to_vec();
+        converted_table.add_foreign_key(ForeignKey::new(
+            schema.name().to_string(),
+            schema.name().to_string(),
+            foreign_columns.clone(),
+            postgres_table.name().to_string(),
+            foreign_columns,
+        ));
+        schema.add_table(converted_table);
+    } else {
+        return Err(());
+    }
     Ok(())
 }
 fn convert_set(
@@ -217,8 +277,8 @@ fn convert_set(
     cassandra_column: &CassandraColumn,
 ) -> Result<(), ()> {
     match type_ {
-        CType::Collection { .. } | CType::Tuple(..) => return Err(()),
-        CType::Udt { .. } | CType::Primitive(..) => (),
+        CType::Collection { .. } | CType::Tuple(..) | CType::Udt { .. } => return Err(()),
+        CType::Primitive(..) => (),
     }
     let mut set_table = PTable::new(format!(
         "{}_{}",
@@ -244,14 +304,6 @@ fn convert_set(
         });
 
     match type_ {
-        CType::Udt { name, .. } => {
-            let mut column = PostgresColumn::new(
-                "element".to_string(),
-                PostgresType::Composite(name.to_string()),
-            );
-            column.set_uuid(cassandra_column.uuid());
-            set_table.add_column(column);
-        }
         CType::Primitive(primite_type) => {
             let mut column = PostgresColumn::new(
                 "element".to_string(),
@@ -260,7 +312,7 @@ fn convert_set(
             column.set_uuid(cassandra_column.uuid());
             set_table.add_column(column);
         }
-        CType::Collection { .. } | CType::Tuple(..) => unreachable!(),
+        CType::Collection { .. } | CType::Tuple(..) | CType::Udt { .. } => unreachable!(),
     }
 
     schema.add_table(set_table);
@@ -276,8 +328,8 @@ fn convert_tuple(
     cassandra_column: &CassandraColumn,
 ) -> Result<(), ()> {
     if cassandra_types.iter().any(|t| match t {
-        CType::Primitive(_) | CType::Udt { .. } => false,
-        CType::Collection { .. } | CType::Tuple(_) => true,
+        CType::Primitive(_) => false,
+        CType::Collection { .. } | CType::Tuple(_) | CType::Udt { .. } => true,
     }) {
         return Err(());
     }
@@ -316,13 +368,7 @@ fn convert_tuple(
                 column.set_uuid(cassandra_column.uuid());
                 tuple_table.add_column(column);
             }
-            CType::Udt { name, .. } => {
-                let mut column =
-                    PostgresColumn::new(column_name, PostgresType::Composite(name.to_string()));
-                column.set_uuid(cassandra_column.uuid());
-                tuple_table.add_column(column);
-            }
-            CType::Collection { .. } | CType::Tuple(..) => unreachable!(),
+            CType::Collection { .. } | CType::Tuple(..) | CType::Udt { .. } => unreachable!(),
         }
     }
 
