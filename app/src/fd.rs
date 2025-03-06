@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeSet, HashMap, HashSet},
     fmt::write,
     fs::File,
+    ops::{Index, IndexMut},
     path::PathBuf,
 };
 
@@ -40,6 +41,22 @@ struct DependencyMatrix {
     matrix: Array2<Option<DependencyKind>>,
 }
 
+impl Index<(BTreeSet<usize>, usize)> for DependencyMatrix {
+    type Output = Option<DependencyKind>;
+
+    fn index(&self, index: (BTreeSet<usize>, usize)) -> &Self::Output {
+        let (row, col) = (self.lut[&index.0], index.1);
+        &self.matrix[[row, col]]
+    }
+}
+
+impl IndexMut<(BTreeSet<usize>, usize)> for DependencyMatrix {
+    fn index_mut(&mut self, index: (BTreeSet<usize>, usize)) -> &mut Self::Output {
+        let (row, col) = (self.lut[&index.0], index.1);
+        &mut self.matrix[[row, col]]
+    }
+}
+
 impl DependencyMatrix {
     fn new(attribute_count: usize) -> Self {
         let matrix = Array2::from_elem((1 << attribute_count, attribute_count), None);
@@ -60,6 +77,69 @@ impl DependencyMatrix {
     fn dependency(&self, lhs: &BTreeSet<usize>, rhs: usize) -> Option<DependencyKind> {
         let row = self.lut[lhs];
         self.matrix[[row, rhs]]
+    }
+
+    /// Splits the old matrix into two matrices where the left one has the `remove` fields removed
+    /// and the right has fields `remove` + `add_to_new`. DependencyKind::Yes and
+    /// DependencyKind::No and DependencyKind::Trivial are the only moved values.
+    fn split(&self, remove: &[usize], add_to_new: &[usize]) -> (Self, Self) {
+        let original_attribute_count = self.matrix.shape()[1];
+        let trimmed_attribute_count = original_attribute_count - remove.len();
+        let new_attribute_count = remove.len() + add_to_new.len();
+
+        let trimmed_columns = (0..original_attribute_count)
+            .filter(|c| !remove.contains(c))
+            .collect::<Vec<_>>();
+
+        let mut new_columns = Vec::with_capacity(new_attribute_count);
+        new_columns.extend_from_slice(add_to_new);
+        new_columns.extend_from_slice(remove);
+
+        let mut trimmed_matrix = DependencyMatrix::new(trimmed_attribute_count);
+        let mut new_matrix = DependencyMatrix::new(new_attribute_count);
+
+        for (original_subset, &original_row) in self.lut.iter() {
+            let trimmed_subset = original_subset
+                .iter()
+                .filter_map(|&attribute| {
+                    trimmed_columns
+                        .iter()
+                        .position(|&column| column == attribute)
+                })
+                .collect();
+
+            let new_subset = original_subset
+                .iter()
+                .filter_map(|&attribute| new_columns.iter().position(|&column| column == attribute))
+                .collect();
+
+            let trimmed_row = trimmed_matrix.lut[&trimmed_subset];
+            let new_row = new_matrix.lut[&new_subset];
+
+            for (new_column, &original_column) in trimmed_columns.iter().enumerate() {
+                if let Some(dependency) = self.matrix[[original_row, original_column]] {
+                    match dependency {
+                        DependencyKind::Yes | DependencyKind::No | DependencyKind::Trivial => {
+                            trimmed_matrix.matrix[[trimmed_row, new_column]] = Some(dependency);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            for (new_column, &original_column) in new_columns.iter().enumerate() {
+                if let Some(dependency) = self.matrix[[original_row, original_column]] {
+                    match dependency {
+                        DependencyKind::Yes | DependencyKind::No | DependencyKind::Trivial => {
+                            new_matrix.matrix[[new_row, new_column]] = Some(dependency);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        (trimmed_matrix, new_matrix)
     }
 
     fn print_dependencies(&self) {
@@ -189,8 +269,6 @@ pub struct DependencyInference {
     schema: Schema,
     fds: HashMap<String, DependencyMatrix>,
     folder: PathBuf,
-    partial_dependencies: HashMap<String, Vec<(BTreeSet<usize>, usize)>>,
-    transitive_dependencies: HashMap<String, Vec<(BTreeSet<usize>, usize)>>,
 }
 
 impl DependencyInference {
@@ -204,8 +282,64 @@ impl DependencyInference {
             schema,
             fds,
             folder,
-            partial_dependencies: HashMap::new(),
-            transitive_dependencies: HashMap::new(),
+        }
+    }
+
+    pub(crate) fn verify_and_set_primary_keys(&mut self) {
+        let mut tables_with_invalid_keys = HashMap::new();
+        for (table_name, _) in self.fds.iter() {
+            let table = self
+                .schema
+                .tables()
+                .iter()
+                .find(|table| table.name() == table_name)
+                .expect("Logic_error");
+
+            let primary_keys = table.primary_keys();
+            let primary_key_indeces = primary_keys
+                .iter()
+                .map(|column_name| {
+                    table
+                        .columns()
+                        .iter()
+                        .position(|column| column.name() == column_name)
+                        .expect("Logic error.")
+                })
+                .collect::<BTreeSet<_>>();
+            let candidate_keys = self.find_candidate_keys(table_name);
+            let mut is_valid_key = false;
+            for candidate_key in candidate_keys.iter() {
+                if candidate_key == &primary_key_indeces {
+                    is_valid_key = true;
+                }
+            }
+            if !is_valid_key {
+                tables_with_invalid_keys.insert(table_name, candidate_keys[0].clone());
+            }
+        }
+        for (table_name, key_indeces) in tables_with_invalid_keys {
+            let table = self
+                .schema
+                .tables_mut()
+                .iter_mut()
+                .find(|table| table.name() == table_name)
+                .expect("Logic error.");
+
+            table.primary_keys_mut().drain(..);
+            for i in key_indeces {
+                table.add_primary_key(table.columns()[i].name().to_string());
+            }
+        }
+    }
+
+    fn decompose(
+        &mut self,
+        decomposition_data: &HashMap<String, HashMap<BTreeSet<usize>, BTreeSet<usize>>>,
+    ) {
+        for (table_name, conflict) in decomposition_data.iter() {
+            for (lhs, rhs) in conflict.iter() {
+                todo!("state management should be careful and done all at once at the start. no middle multiple mutablility.")
+            }
         }
     }
 
@@ -220,9 +354,9 @@ impl DependencyInference {
             for (lhs, &row) in dependency_matrix.lut.iter() {
                 if lhs.is_subset(&closure) {
                     for rhs in 0..dependency_matrix.matrix.shape()[1] {
-                        if dependency_matrix.matrix[[row, rhs]].is_some_and(|x| {
-                            x == DependencyKind::Yes || x == DependencyKind::Trivial
-                        }) && closure.insert(rhs)
+                        if dependency_matrix.matrix[[row, rhs]]
+                            .is_some_and(|x| x == DependencyKind::Yes)
+                            && closure.insert(rhs)
                         {
                             added = true;
                         }
@@ -234,7 +368,7 @@ impl DependencyInference {
         closure
     }
 
-    pub fn find_candidate_keys_bf(&self, table_name: &str) -> Vec<BTreeSet<usize>> {
+    pub fn find_candidate_keys(&self, table_name: &str) -> Vec<BTreeSet<usize>> {
         let attribute_count = self.fds[table_name].matrix.shape()[1];
         let attributes = (0..attribute_count).collect::<BTreeSet<_>>();
 
@@ -337,115 +471,114 @@ impl DependencyInference {
         }
     }
 
-    pub fn is_in_2nf(&mut self) -> bool {
-        let mut partial_dependencies: HashMap<String, Vec<(BTreeSet<usize>, usize)>> =
-            HashMap::new();
-        for table_name in self.schema.tables().iter().map(|t| t.name()) {
-            let candidate_keys = self.find_candidate_keys_bf(table_name);
-            let dependency_matrix = &self.fds[table_name];
-
-            let all_attributes = (0..dependency_matrix.matrix.shape()[1]).collect::<BTreeSet<_>>();
-
-            let prime_attributes = candidate_keys
-                .iter()
-                .flatten()
-                .copied()
-                .collect::<BTreeSet<_>>();
-
-            let non_prime_attributes = all_attributes
-                .difference(&prime_attributes)
-                .collect::<BTreeSet<_>>();
-
-            for (lhs, &row) in dependency_matrix.lut.iter() {
-                if lhs.len() > 1 {
-                    for &&rhs in non_prime_attributes.iter() {
-                        if let Some(DependencyKind::Yes) = dependency_matrix.matrix[[row, rhs]] {
-                            for candidate_key in candidate_keys.iter() {
-                                if lhs.is_subset(candidate_key) && lhs.len() < candidate_key.len() {
-                                    partial_dependencies
-                                        .entry(table_name.to_string())
-                                        .or_default()
-                                        .push((lhs.clone(), rhs));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        self.partial_dependencies = partial_dependencies;
-        self.partial_dependencies.is_empty()
-    }
-
     pub fn convert_to_2nf(&mut self) {
-        // Take the partial dependencies, fetch the column definitions for each
-        // Create a new table with the original's primary key (also implement to check if the
-        // original primary key is actually minimal)
-        // Make a set from these columns
-        // add them to the table
-        // add the primary key to the table with a foreign key link
-        // set the columns to backlink to the original
-        todo!()
-    }
-
-    pub fn is_in_3nf(&mut self) -> bool {
-        let mut transitive_dependencies: HashMap<String, Vec<(BTreeSet<usize>, usize)>> =
-            HashMap::new();
-
-        for table_name in self.schema.tables().iter().map(|t| t.name()) {
-            let candidate_keys = self.find_candidate_keys_bf(table_name);
-            let dependency_matrix = &self.fds[table_name];
-
-            let all_attributes = (0..dependency_matrix.matrix.shape()[1]).collect::<BTreeSet<_>>();
-
+        let mut non_2nf_tables = HashMap::new();
+        let mut decomposition_data = HashMap::new();
+        for (table_name, dependency_matrix) in self.fds.iter() {
+            let mut non_2nf_fds = Vec::new();
+            let candidate_keys = self.find_candidate_keys(table_name);
+            println!("Candidate keys: {:#?}", candidate_keys);
             let prime_attributes = candidate_keys
                 .iter()
                 .flatten()
                 .copied()
                 .collect::<BTreeSet<_>>();
-
-            let non_prime_attributes = all_attributes
+            let attributes = (0..dependency_matrix.matrix.shape()[1]).collect::<BTreeSet<_>>();
+            let non_prime_attributes = attributes
                 .difference(&prime_attributes)
                 .copied()
                 .collect::<BTreeSet<_>>();
 
-            for (lhs, &row) in dependency_matrix.lut.iter() {
-                if lhs.len() == 1 && prime_attributes.contains(lhs.iter().next().unwrap()) {
-                    continue;
-                }
-
-                for &rhs in &non_prime_attributes {
-                    if let Some(DependencyKind::Yes) = dependency_matrix.matrix[[row, rhs]] {
-                        let closure = self.calculate_closure(lhs, table_name);
-                        if !closure.contains(&rhs) {
+            for non_prime_attribute in non_prime_attributes.iter().copied() {
+                for key in candidate_keys.iter() {
+                    let subset_iter = SubsetIterator::new(key.iter().copied().collect::<Vec<_>>());
+                    for partial_key in subset_iter.into_iter() {
+                        if partial_key == *key {
                             continue;
                         }
-
-                        let is_superkey = candidate_keys.iter().any(|k| lhs.is_superset(k));
-                        if !is_superkey {
-                            transitive_dependencies
-                                .entry(table_name.to_string())
-                                .or_default()
-                                .push((lhs.clone(), rhs));
+                        let closure = self.calculate_closure(&partial_key, table_name);
+                        if closure.contains(&non_prime_attribute) {
+                            non_2nf_fds.push((partial_key.clone(), non_prime_attribute));
+                            break;
                         }
                     }
                 }
             }
+            non_2nf_tables.insert(table_name.clone(), non_2nf_fds);
+            println!("Conflicts: {:#?}", non_2nf_tables);
         }
-
-        self.transitive_dependencies = transitive_dependencies;
-        println!("{:#?}", self.transitive_dependencies);
-        self.transitive_dependencies.is_empty()
+        for (table_name, conflicts) in non_2nf_tables.iter() {
+            let mut grouped_conflict = HashMap::new();
+            for (lhs, rhs) in conflicts.iter() {
+                grouped_conflict
+                    .entry(lhs.clone())
+                    .or_insert_with(|| BTreeSet::from_iter(vec![*rhs]))
+                    .insert(*rhs);
+            }
+            decomposition_data.insert(table_name.clone(), grouped_conflict);
+        }
+        println!("dec data: {:#?}", decomposition_data);
     }
 
     pub fn convert_to_3nf(&mut self) {
-        // Take the transitive dependencies, fetch the column definitions for each
-        // Create a new table with the original's primary key (also implement to check if the
-        // original primary key is actually minimal)
-        // Make a set from these columns
-        // add them to the table
-        // add the primary key to the table with a foreign key link
-        // set the columns to backlink to the original
+        let mut conflicts = HashMap::new();
+
+        for (table_name, dependency_matrix) in self.fds.iter() {
+            println!("Checking table: {table_name}");
+            let mut non_3nf_fds = Vec::new();
+            let candidate_keys = self.find_candidate_keys(table_name);
+            println!("candidate keys: {:#?}", candidate_keys);
+            let prime_attributes = candidate_keys
+                .iter()
+                .flatten()
+                .copied()
+                .collect::<BTreeSet<_>>();
+            println!("prime attributes: {:#?}", prime_attributes);
+            let attributes = (0..dependency_matrix.matrix.shape()[1]).collect::<BTreeSet<_>>();
+            let non_prime_attributes = attributes
+                .difference(&prime_attributes)
+                .copied()
+                .collect::<BTreeSet<_>>();
+            println!("non prime attributes: {:#?}", non_prime_attributes);
+
+            for (lhs, _row) in dependency_matrix.lut.iter() {
+                for rhs in attributes.iter().copied() {
+                    let mut is_trivial = false;
+                    let mut is_superkey = false;
+                    let mut is_prime_attribute = false;
+                    if dependency_matrix[(lhs.clone(), rhs)] == Some(DependencyKind::Trivial) {
+                        is_trivial = true;
+                    }
+                    if self.calculate_closure(lhs, table_name) == attributes {
+                        is_superkey = true;
+                    }
+                    if !lhs.contains(&rhs) {
+                        is_prime_attribute = prime_attributes.contains(&rhs);
+                    }
+
+                    if !(is_trivial || is_superkey || is_prime_attribute)
+                        && dependency_matrix[(lhs.clone(), rhs)] == Some(DependencyKind::Yes)
+                    {
+                        non_3nf_fds.push((lhs.clone(), rhs));
+                    }
+                }
+            }
+            conflicts.insert(table_name.clone(), non_3nf_fds);
+        }
+        println!("Confilcts: {:#?}", conflicts);
+        let mut grouped_conflicts = HashMap::new();
+        for (table_name, conflict) in conflicts.iter_mut() {
+            let mut grouped_conflict = HashMap::new();
+            for (lhs, rhs) in conflict.drain(..) {
+                grouped_conflict
+                    .entry(lhs)
+                    .or_insert_with(BTreeSet::new)
+                    .insert(rhs);
+            }
+            grouped_conflicts.insert(table_name.clone(), grouped_conflict);
+        }
+
+        println!("grouped: {:#?}", grouped_conflicts);
     }
 }
 
@@ -457,4 +590,87 @@ impl std::fmt::Display for DependencyInference {
         }
         Ok(())
     }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::postgres::types::{PrimitiveType, Type};
+
+    use super::*;
+
+    #[test]
+    fn test_2nf() {
+        let mut schema = Schema::new("test_schema".to_string());
+        let mut table = Table::new("test_table".to_string());
+        let column_names = ["a", "b", "c", "d", "e", "f", "g", "h"];
+        for column_name in column_names {
+            let column_definition =
+                ColumnDefinition::new(column_name.to_string(), Type::Simple(PrimitiveType::Text));
+            table.add_column(column_definition);
+        }
+        schema.add_table(table);
+        let mut fd_matrix = DependencyMatrix::new(column_names.len());
+        fd_matrix.set_dependency(&BTreeSet::from_iter(vec![2]), 5, DependencyKind::Yes);
+        fd_matrix.set_dependency(&BTreeSet::from_iter(vec![2]), 7, DependencyKind::Yes);
+        fd_matrix.set_dependency(&BTreeSet::from_iter(vec![1]), 3, DependencyKind::Yes);
+        fd_matrix.set_dependency(&BTreeSet::from_iter(vec![5]), 6, DependencyKind::Yes);
+        let mut fds = HashMap::new();
+        fds.insert("test_table".to_string(), fd_matrix);
+        let mut dependency_inference = DependencyInference {
+            schema,
+            fds,
+            folder: PathBuf::new(),
+        };
+        dependency_inference.convert_to_2nf();
+        panic!();
+    }
+
+    /*#[test]
+    fn test_3nf() {
+        let mut fds = HashMap::new();
+        let mut schema = Schema::new("test_schema".to_string());
+
+        let mut r1 = Table::new("r1".to_string());
+        let column_names = ["a", "b", "c", "e"];
+        for column_name in column_names {
+            let column_definition =
+                ColumnDefinition::new(column_name.to_string(), Type::Simple(PrimitiveType::Text));
+            r1.add_column(column_definition);
+        }
+        schema.add_table(r1);
+        let fd_matrix = DependencyMatrix::new(column_names.len());
+        fds.insert("r1".to_string(), fd_matrix);
+
+        let mut r2 = Table::new("r2".to_string());
+        let column_names = ["c", "f", "g", "h"];
+        for column_name in column_names {
+            let column_definition =
+                ColumnDefinition::new(column_name.to_string(), Type::Simple(PrimitiveType::Text));
+            r2.add_column(column_definition);
+        }
+        schema.add_table(r2);
+        let mut fd_matrix = DependencyMatrix::new(column_names.len());
+        fd_matrix.set_dependency(&BTreeSet::from_iter(vec![0]), 1, DependencyKind::Yes);
+        fd_matrix.set_dependency(&BTreeSet::from_iter(vec![0]), 3, DependencyKind::Yes);
+        fd_matrix.set_dependency(&BTreeSet::from_iter(vec![1]), 2, DependencyKind::Yes);
+        fds.insert("r2".to_string(), fd_matrix);
+
+        let mut r3 = Table::new("r3".to_string());
+        let column_names = ["b", "d"];
+        for column_name in column_names {
+            let column_definition =
+                ColumnDefinition::new(column_name.to_string(), Type::Simple(PrimitiveType::Text));
+            r3.add_column(column_definition);
+        }
+        let mut fd_matrix = DependencyMatrix::new(column_names.len());
+        fd_matrix.set_dependency(&BTreeSet::from_iter(vec![0]), 1, DependencyKind::Yes);
+        fds.insert("r3".to_string(), fd_matrix);
+        schema.add_table(r3);
+        let mut dependency_inference = DependencyInference {
+            schema,
+            fds,
+            folder: PathBuf::new(),
+        };
+        dependency_inference.convert_to_3nf();
+    }*/
 }

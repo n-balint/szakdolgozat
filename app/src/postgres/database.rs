@@ -1,8 +1,11 @@
+use itertools::Itertools;
+use std::fmt::Write;
 use uuid::Uuid;
 
 use super::types::{CompositeField, Type};
 use crate::cassandra::database::ColumnDefinition as CColumnDefinition;
 use crate::cassandra::database::Table as CTable;
+use crate::query::Query;
 
 #[derive(Debug, Clone)]
 pub struct Schema {
@@ -60,13 +63,94 @@ impl Schema {
     pub fn enums(&self) -> &Vec<Enum> {
         &self.enums
     }
+
+    fn query_string(&self) -> String {
+        let mut query_string = String::new();
+        let query_ref = &mut query_string;
+        write!(query_ref, "CREATE SCHEMA {};", self.name).unwrap();
+        writeln!(query_ref).unwrap();
+
+        for table in self.tables().iter() {
+            write!(query_ref, "{}", Self::query_string_table(table)).unwrap();
+        }
+
+        query_string
+    }
+
+    fn query_string_table(table: &Table) -> String {
+        let mut query_string = String::new();
+        let query_ref = &mut query_string;
+
+        writeln!(query_ref, "CREATE TABLE {} (", table.name).unwrap();
+        for (i, column) in table.columns.iter().enumerate() {
+            let nullable = if column.nullable { "" } else { "not null" };
+            if i == table.columns.len() - 1 {
+                writeln!(
+                    query_ref,
+                    "\t{} {} {}",
+                    column.name, column.r#type, nullable
+                )
+                .unwrap();
+            } else {
+                writeln!(
+                    query_ref,
+                    "\t{} {} {},",
+                    column.name, column.r#type, nullable
+                )
+                .unwrap();
+            }
+        }
+        write!(query_ref, ");").unwrap();
+        writeln!(query_ref).unwrap();
+
+        writeln!(
+            query_ref,
+            "ALTER TABLE {} ADD PRIMARY KEY ({});",
+            table.name,
+            table.primary_keys.iter().join(", ")
+        )
+        .unwrap();
+
+        // TODO: Write foreign keys.
+        // might need fixing somewhere else to get the optional parts (schema, ref schema...)
+        for foreign_key in table.foreign_keys.iter() {
+            write!(
+                query_ref,
+                "ALTER TABLE {}.{} ADD CONSTRAINT {}_{}_fkey FOREIGN KEY ({}) REFERENCES {}.{}({}) ",
+                foreign_key.schema,
+                table.name,
+                table.name,
+                foreign_key.column.iter().join("_"),
+                foreign_key.column.iter().join(", "),
+                foreign_key.referenced_schema,
+                foreign_key.references_table,
+                foreign_key.references_column.iter().join(", "),
+            )
+            .unwrap();
+            if let Some(action) = foreign_key.on_update {
+                write!(query_ref, "ON UPDATE {}", action).unwrap();
+            }
+            if let Some(action) = foreign_key.on_delete {
+                write!(query_ref, "ON DELETE {}", action).unwrap();
+            }
+            writeln!(query_ref, ";").unwrap();
+        }
+
+        query_string
+    }
+}
+
+impl Query for Schema {
+    fn to_query_string(&self) -> String {
+        self.query_string()
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct Table {
     name: String,
     columns: Vec<ColumnDefinition>,
-    primary_key: Vec<String>,
+    primary_keys: Vec<String>,
     foreign_keys: Vec<ForeignKey>,
     uuid: Uuid,
 }
@@ -76,7 +160,7 @@ impl Table {
         Self {
             name,
             columns: Vec::new(),
-            primary_key: Vec::new(),
+            primary_keys: Vec::new(),
             foreign_keys: Vec::new(),
             uuid: Uuid::new_v4(),
         }
@@ -86,7 +170,7 @@ impl Table {
         Self {
             name: cassandra_table.name().to_string(),
             columns: Vec::new(),
-            primary_key: Vec::new(),
+            primary_keys: Vec::new(),
             foreign_keys: Vec::new(),
             uuid: cassandra_table.uuid(),
         }
@@ -103,19 +187,20 @@ impl Table {
     pub fn columns(&self) -> &Vec<ColumnDefinition> {
         &self.columns
     }
+    pub fn columns_mut(&mut self) -> &mut Vec<ColumnDefinition> {
+        &mut self.columns
+    }
     pub fn add_column(&mut self, column: ColumnDefinition) {
         self.columns.push(column);
     }
-    pub fn remove_column(&mut self, name: &str) {
-        if let Some(index) = self.columns.iter().position(|column| column.name == name) {
-            self.columns.swap_remove(index);
-        }
-    }
     pub fn primary_keys(&self) -> &Vec<String> {
-        &self.primary_key
+        &self.primary_keys
+    }
+    pub fn primary_keys_mut(&mut self) -> &mut Vec<String> {
+        &mut self.primary_keys
     }
     pub fn add_primary_key(&mut self, key: String) {
-        self.primary_key.push(key);
+        self.primary_keys.push(key);
     }
     pub fn foreign_keys(&self) -> &Vec<ForeignKey> {
         &self.foreign_keys
@@ -215,6 +300,16 @@ pub enum Action {
     Cascade,
     SetNull,
     Restrict,
+}
+
+impl std::fmt::Display for Action {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Action::Cascade => write!(f, "CASCADE"),
+            Action::SetNull => write!(f, "SET NULL"),
+            Action::Restrict => write!(f, "RESTRICT"),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

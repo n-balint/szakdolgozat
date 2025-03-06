@@ -8,13 +8,9 @@ use crate::{
         database::{ColumnDefinition as PostgresColumn, ForeignKey, Schema, Table as PTable},
         types::{CompositeField, PrimitiveType as PostgresPrimitive, Type as PostgresType},
     },
-    relations::Relations,
 };
 
-pub(crate) fn convert_keyspace_to_schema(
-    keyspace: &Keyspace,
-    relations: Relations,
-) -> Result<Schema, ()> {
+pub(crate) fn convert_keyspace_to_schema(keyspace: &Keyspace) -> Result<Schema, ()> {
     let mut schema = Schema::new(keyspace.name().to_string());
     convert_tables(&mut schema, keyspace)?;
 

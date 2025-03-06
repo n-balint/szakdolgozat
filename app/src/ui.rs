@@ -23,6 +23,7 @@ use crate::{
     events::{parse_schema_event::ParseSchemaEvent, Event},
     fd::DependencyInference,
     postgres::conversion::KeyspaceConverter,
+    query::Query,
 };
 use crate::{events::parse_keyspace_event::ParseKeyspaceEvent, postgres::database::Schema};
 
@@ -203,11 +204,8 @@ impl eframe::App for App {
             }
             // TEMP SEGMENT
             if ui.button("test postgresify").clicked() {
-                let schema = convert_keyspace_to_schema(
-                    self.app_state.keyspace.as_ref().unwrap(),
-                    Default::default(),
-                )
-                .unwrap();
+                let schema =
+                    convert_keyspace_to_schema(self.app_state.keyspace.as_ref().unwrap()).unwrap();
                 self.app_state.schema = Some(schema);
             }
             if ui.button("folder_magic").clicked() {
@@ -224,9 +222,18 @@ impl eframe::App for App {
                 );
                 deps.extract_dependencies();
                 deps.print_dependencies();
-                println!("2nf: {}", deps.is_in_2nf());
-                println!("3nf: {}", deps.is_in_3nf());
+                deps.convert_to_2nf();
+                deps.convert_to_3nf();
                 println!("{}", deps);
+            }
+            if ui.button("query dump").clicked() {
+                let converted =
+                    convert_keyspace_to_schema(self.app_state.keyspace.as_ref().unwrap());
+                self.app_state.schema = Some(converted.unwrap());
+                println!(
+                    "{}",
+                    self.app_state.keyspace.as_ref().unwrap().to_query_string()
+                );
             }
             // END TEMP SEGMENT
             match self.conversion_direction {

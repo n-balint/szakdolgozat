@@ -13,7 +13,6 @@ mod events;
 mod fd;
 mod postgres;
 mod query;
-mod relations;
 mod ui;
 mod util;
 

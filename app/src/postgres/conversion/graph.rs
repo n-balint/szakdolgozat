@@ -114,7 +114,5 @@ mod test {
         for node in graph.dfs(3) {
             println!("{}", node.data())
         }
-
-        panic!();
     }
 }

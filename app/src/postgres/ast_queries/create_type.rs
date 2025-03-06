@@ -158,7 +158,5 @@ mod test {
             .unwrap();
         let root = parser.parse(source, None).unwrap();
         parse_create_type_composite(source, &root.root_node());
-
-        panic!();
     }
 }

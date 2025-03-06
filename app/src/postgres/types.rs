@@ -11,6 +11,61 @@ pub enum Type {
     Enum(String),
 }
 
+impl std::fmt::Display for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Type::Simple(primitive_type) => match primitive_type {
+                PrimitiveType::Bigint => write!(f, "bigint"),
+                PrimitiveType::Bigserial => write!(f, "bigserial"),
+                PrimitiveType::Bit(_) => panic!("Cannot be mapped from cassandra."),
+                PrimitiveType::BitVarying(_) => panic!("Cannot be mapped from cassandra."),
+                PrimitiveType::Boolean => write!(f, "boolean"),
+                PrimitiveType::Box => write!(f, "box"),
+                PrimitiveType::Bytea => write!(f, "bytea"),
+                PrimitiveType::Character(_) => write!(f, "character varying"),
+                PrimitiveType::CharacterVarying(_) => write!(f, "character varying"),
+                PrimitiveType::Cidr => write!(f, "cidr"),
+                PrimitiveType::Circle => write!(f, "circle"),
+                PrimitiveType::Date => write!(f, "date"),
+                PrimitiveType::DoublePrecision => write!(f, "double precision"),
+                PrimitiveType::Inet => write!(f, "inet"),
+                PrimitiveType::Integer => write!(f, "integer"),
+                PrimitiveType::Interval => write!(f, "interval"),
+                PrimitiveType::Json => write!(f, "json"),
+                PrimitiveType::Jsonb => write!(f, "jsonb"),
+                PrimitiveType::Line => write!(f, "line"),
+                PrimitiveType::LSeg => write!(f, "lseg"),
+                PrimitiveType::Macaddr => write!(f, "macaddr"),
+                PrimitiveType::Macaddr8 => write!(f, "macaddr8"),
+                PrimitiveType::Money => write!(f, "money"),
+                PrimitiveType::Numeric(_, _) => write!(f, "numeric"),
+                PrimitiveType::Path => write!(f, "path"),
+                PrimitiveType::PgLen => write!(f, "pg_lsn"),
+                PrimitiveType::PgSnapshot => write!(f, "pg_snapshot"),
+                PrimitiveType::Point => write!(f, "point"),
+                PrimitiveType::Polygon => write!(f, "polygon"),
+                PrimitiveType::Real => write!(f, "real"),
+                PrimitiveType::Smallint => write!(f, "smallint"),
+                PrimitiveType::Smallserial => write!(f, "smallserial"),
+                PrimitiveType::Serial => write!(f, "serial"),
+                PrimitiveType::Text => write!(f, "text"),
+                PrimitiveType::Time => write!(f, "time"),
+                PrimitiveType::TimeWithTimezone => write!(f, "time with time zone"),
+                PrimitiveType::Timestamp => write!(f, "timestamp"),
+                PrimitiveType::TimestampWithTimezone => write!(f, "timestamp with time zone"),
+                PrimitiveType::TsQuery => write!(f, "tsquery"),
+                PrimitiveType::TsVector => write!(f, "tsvector"),
+                PrimitiveType::TxIdSnapshot => write!(f, "txid_snapshot"),
+                PrimitiveType::Uuid => write!(f, "uuid"),
+                PrimitiveType::Xml => write!(f, "xml"),
+            },
+            Type::Composite(_) | Type::Array(_) | Type::Enum(_) => {
+                panic!("Should not arise from conversion.")
+            }
+        }
+    }
+}
+
 impl TryFrom<&str> for Type {
     type Error = String;
     fn try_from(value: &str) -> Result<Self, Self::Error> {
@@ -155,7 +210,7 @@ impl From<CPType> for PrimitiveType {
             CPType::TimeUuid => PrimitiveType::Uuid,
             CPType::Tinyint => PrimitiveType::Smallint,
             CPType::Uuid => PrimitiveType::Uuid,
-            CPType::Varchar => PrimitiveType::CharacterVarying(0),
+            CPType::Varchar => PrimitiveType::Text,
             CPType::Varint => PrimitiveType::Numeric(0, 0),
         }
     }
