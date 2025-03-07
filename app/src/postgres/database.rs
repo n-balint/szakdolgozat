@@ -39,6 +39,14 @@ impl Schema {
             enums: Vec::new(),
         }
     }
+    pub(crate) fn rotate_uuids(&mut self) {
+        for table in self.tables.iter_mut() {
+            table.set_uuid(Uuid::new_v4());
+            for column in table.columns.iter_mut() {
+                column.set_uuid(Uuid::new_v4());
+            }
+        }
+    }
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -66,22 +74,42 @@ impl Schema {
 
     fn query_string(&self) -> String {
         let mut query_string = String::new();
+        let mut foreign_key_buf = String::new();
+        let mut primary_key_buf = String::new();
         let query_ref = &mut query_string;
         write!(query_ref, "CREATE SCHEMA {};", self.name).unwrap();
         writeln!(query_ref).unwrap();
 
         for table in self.tables().iter() {
-            write!(query_ref, "{}", Self::query_string_table(table)).unwrap();
+            write!(
+                query_ref,
+                "{}",
+                Self::query_string_table(
+                    &self.name,
+                    table,
+                    &mut foreign_key_buf,
+                    &mut primary_key_buf
+                )
+            )
+            .unwrap();
         }
+
+        writeln!(&mut query_string, "{}", primary_key_buf).unwrap();
+        writeln!(&mut query_string, "{}", foreign_key_buf).unwrap();
 
         query_string
     }
 
-    fn query_string_table(table: &Table) -> String {
+    fn query_string_table(
+        schema_name: &str,
+        table: &Table,
+        foreign_key_buf: &mut String,
+        primary_key_buf: &mut String,
+    ) -> String {
         let mut query_string = String::new();
         let query_ref = &mut query_string;
 
-        writeln!(query_ref, "CREATE TABLE {} (", table.name).unwrap();
+        writeln!(query_ref, "CREATE TABLE {}.{} (", schema_name, table.name).unwrap();
         for (i, column) in table.columns.iter().enumerate() {
             let nullable = if column.nullable { "" } else { "not null" };
             if i == table.columns.len() - 1 {
@@ -104,18 +132,17 @@ impl Schema {
         writeln!(query_ref).unwrap();
 
         writeln!(
-            query_ref,
-            "ALTER TABLE {} ADD PRIMARY KEY ({});",
+            primary_key_buf,
+            "ALTER TABLE {}.{} ADD PRIMARY KEY ({});",
+            schema_name,
             table.name,
             table.primary_keys.iter().join(", ")
         )
         .unwrap();
 
-        // TODO: Write foreign keys.
-        // might need fixing somewhere else to get the optional parts (schema, ref schema...)
         for foreign_key in table.foreign_keys.iter() {
             write!(
-                query_ref,
+                foreign_key_buf,
                 "ALTER TABLE {}.{} ADD CONSTRAINT {}_{}_fkey FOREIGN KEY ({}) REFERENCES {}.{}({}) ",
                 foreign_key.schema,
                 table.name,
@@ -128,12 +155,12 @@ impl Schema {
             )
             .unwrap();
             if let Some(action) = foreign_key.on_update {
-                write!(query_ref, "ON UPDATE {}", action).unwrap();
+                write!(foreign_key_buf, "ON UPDATE {}", action).unwrap();
             }
             if let Some(action) = foreign_key.on_delete {
-                write!(query_ref, "ON DELETE {}", action).unwrap();
+                write!(foreign_key_buf, "ON DELETE {}", action).unwrap();
             }
-            writeln!(query_ref, ";").unwrap();
+            writeln!(foreign_key_buf, ";").unwrap();
         }
 
         query_string

@@ -14,7 +14,7 @@ use crate::{
 pub struct SimpleConversion;
 
 impl SimpleConversion {
-    fn convert_schema_to_keyspace(schema: &Schema) -> Keyspace {
+    pub(crate) fn convert_schema_to_keyspace(schema: &Schema) -> Keyspace {
         let mut keyspace = Keyspace::new(
             schema.name().to_string(),
             Replication::new(Strategy::Simple("1".to_string()), true),

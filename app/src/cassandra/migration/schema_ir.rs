@@ -18,7 +18,6 @@ pub fn generate_schema_ir(
 ) -> Result<(), Box<dyn Error>> {
     let parser = CompositeDataParser::new();
     for table in converted_schema.tables().iter() {
-        println!("processing table {}", table.name());
         let mut new_table_writer = WriterBuilder::new()
             .escape(b'\"')
             .quote(b'\"')
@@ -30,8 +29,6 @@ pub fn generate_schema_ir(
         let old_table = old_keyspace
             .table_by_coldef_uuid(table.columns()[0].uuid())
             .expect("Logic error");
-
-        println!("old table: {}", old_table.name());
 
         let path = folder.join(format!("{}.csv", old_table.name()));
 
@@ -51,7 +48,6 @@ pub fn generate_schema_ir(
         for record in reader.records() {
             let mut multi_row = Vec::new();
             let record = record?;
-            println!("Processing record: {:#?}", record);
             let mut converted_row: HashMap<String, String> = HashMap::new();
             for column in table.columns().iter() {
                 let old_column_def = old_keyspace
@@ -59,7 +55,6 @@ pub fn generate_schema_ir(
                     .expect("Logic error");
 
                 let literal = record[lookup_map[old_column_def.name()]].to_string();
-                println!("Got literal: {}", literal);
 
                 match old_column_def.r#type() {
                     Type::Primitive(_) => {
@@ -76,8 +71,6 @@ pub fn generate_schema_ir(
                         }
                         CollectionType::Map(_, _) => {
                             let map_pairs = parser.parse_map_literal(&literal);
-                            println!("map pairs: {:#?}", map_pairs);
-                            println!("column: {}", column.name());
                             for (k, v) in map_pairs.iter() {
                                 let mut new_row = converted_row.clone();
                                 new_row.insert("key".to_string(), k.to_string());
@@ -117,9 +110,6 @@ pub fn generate_schema_ir(
                     item.insert(column_name.to_string(), primitives.to_string());
                 }
             }
-
-            println!("CONVERTED ROW: {:#?}", converted_row);
-            println!("NEW ROWS FROM SOME: {:#?}", multi_row);
 
             if multi_row.is_empty() {
                 let mut ordered_row = Vec::new();

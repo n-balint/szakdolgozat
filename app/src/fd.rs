@@ -12,7 +12,7 @@ use ndarray::Array2;
 
 use crate::{
     cassandra::database::Keyspace,
-    postgres::database::{ColumnDefinition, Schema, Table},
+    postgres::database::{ColumnDefinition, ForeignKey, Schema, Table},
 };
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -83,17 +83,25 @@ impl DependencyMatrix {
     /// and the right has fields `remove` + `add_to_new`. DependencyKind::Yes and
     /// DependencyKind::No and DependencyKind::Trivial are the only moved values.
     fn split(&self, remove: &[usize], add_to_new: &[usize]) -> (Self, Self) {
+        println!("TO REMOVE: {:#?}", remove);
+        println!("TO ADD TO NEW: {:#?}", add_to_new);
         let original_attribute_count = self.matrix.shape()[1];
+        println!("original attribute count: {}", original_attribute_count);
         let trimmed_attribute_count = original_attribute_count - remove.len();
+        println!("trimmed attribute count: {}", trimmed_attribute_count);
         let new_attribute_count = remove.len() + add_to_new.len();
+        println!("new attribute count: {}", new_attribute_count);
 
         let trimmed_columns = (0..original_attribute_count)
             .filter(|c| !remove.contains(c))
             .collect::<Vec<_>>();
+        println!("trimmed columns: {:#?}", trimmed_columns);
 
         let mut new_columns = Vec::with_capacity(new_attribute_count);
         new_columns.extend_from_slice(add_to_new);
         new_columns.extend_from_slice(remove);
+
+        println!("new columns: {:#?}", new_columns);
 
         let mut trimmed_matrix = DependencyMatrix::new(trimmed_attribute_count);
         let mut new_matrix = DependencyMatrix::new(new_attribute_count);
@@ -106,13 +114,15 @@ impl DependencyMatrix {
                         .iter()
                         .position(|&column| column == attribute)
                 })
-                .collect();
+                .collect::<BTreeSet<_>>();
 
             let new_subset = original_subset
                 .iter()
                 .filter_map(|&attribute| new_columns.iter().position(|&column| column == attribute))
-                .collect();
-
+                .collect::<BTreeSet<_>>();
+            if trimmed_subset.is_empty() || new_subset.is_empty() {
+                continue;
+            }
             let trimmed_row = trimmed_matrix.lut[&trimmed_subset];
             let new_row = new_matrix.lut[&new_subset];
 
@@ -138,7 +148,8 @@ impl DependencyMatrix {
                 }
             }
         }
-
+        trimmed_matrix.print_dependencies();
+        new_matrix.print_dependencies();
         (trimmed_matrix, new_matrix)
     }
 
@@ -272,6 +283,9 @@ pub struct DependencyInference {
 }
 
 impl DependencyInference {
+    pub(crate) fn move_schema(self) -> Schema {
+        self.schema
+    }
     pub(crate) fn new(schema: Schema, folder: PathBuf) -> Self {
         let mut fds = HashMap::new();
         for table in schema.tables().iter() {
@@ -335,12 +349,79 @@ impl DependencyInference {
     fn decompose(
         &mut self,
         decomposition_data: &HashMap<String, HashMap<BTreeSet<usize>, BTreeSet<usize>>>,
-    ) {
+    ) -> Result<(), anyhow::Error> {
+        println!("entering decompose with: {:#?}", decomposition_data);
         for (table_name, conflict) in decomposition_data.iter() {
+            let all_removed = conflict
+                .iter()
+                .flat_map(|(_, rhs)| rhs)
+                .copied()
+                .collect::<Vec<_>>();
+
+            let original_table = self
+                .schema
+                .tables_mut()
+                .iter_mut()
+                .find(|table| table.name() == table_name)
+                .expect("Logic error");
+
+            let table_clone = original_table.clone();
+
+            let dependency_matrix = &self.fds[table_name].clone();
+            let primary_key = table_clone
+                .primary_keys()
+                .iter()
+                .map(|key| {
+                    table_clone
+                        .columns()
+                        .iter()
+                        .position(|column| column.name() == key)
+                        .expect("Logic error.")
+                })
+                .collect::<BTreeSet<_>>();
+
+            let (trimmed_matrix, _) = dependency_matrix.split(&all_removed, &[]);
+            let mut trimmed_table = table_clone.clone();
+            let updated_columns = remove_elements_stable(trimmed_table.columns(), &all_removed);
+            *trimmed_table.columns_mut() = updated_columns;
+            *original_table = trimmed_table;
+
             for (lhs, rhs) in conflict.iter() {
-                todo!("state management should be careful and done all at once at the start. no middle multiple mutablility.")
+                let lhs_vec = lhs.iter().copied().collect_vec();
+                let rhs_vec = rhs.iter().copied().collect_vec();
+                assert!(lhs_vec
+                    .iter()
+                    .copied()
+                    .collect::<BTreeSet<_>>()
+                    .is_subset(&primary_key));
+                let keys_indeces = primary_key.iter().copied().collect_vec();
+
+                let (_, new_matrix) = dependency_matrix.split(&rhs_vec, &keys_indeces);
+                let mut new_table =
+                    Table::new(format!("{}_{}", table_name, lhs_vec.iter().join("_")));
+                let mut columns = Vec::new();
+                for key_index in keys_indeces {
+                    new_table.add_column(table_clone.columns()[key_index].clone());
+                    new_table.add_primary_key(table_clone.columns()[key_index].name().to_string());
+                    columns.push(table_clone.columns()[key_index].name().to_string());
+                }
+                for i in rhs_vec {
+                    new_table.add_column(table_clone.columns()[i].clone());
+                }
+                new_table.add_foreign_key(ForeignKey::new(
+                    self.schema.name().to_string(),
+                    self.schema.name().to_string(),
+                    columns.clone(),
+                    table_name.to_string(),
+                    columns,
+                ));
+                self.fds.insert(new_table.name().to_string(), new_matrix);
+                self.schema.add_table(new_table);
             }
+            *self.fds.get_mut(table_name).expect("Logic error.") = trimmed_matrix;
         }
+
+        Ok(())
     }
 
     fn calculate_closure(&self, attributes: &BTreeSet<usize>, table_name: &str) -> BTreeSet<usize> {
@@ -518,11 +599,22 @@ impl DependencyInference {
             decomposition_data.insert(table_name.clone(), grouped_conflict);
         }
         println!("dec data: {:#?}", decomposition_data);
+        let mut empty = true;
+        for (_, conflict) in decomposition_data.iter() {
+            if !conflict.is_empty() {
+                empty = false;
+            }
+        }
+        if empty {
+            return;
+        }
+        self.decompose(&decomposition_data)
+            .expect("Might fail idk.");
     }
 
     pub fn convert_to_3nf(&mut self) {
         let mut conflicts = HashMap::new();
-
+        let mut decomposition_data = HashMap::new();
         for (table_name, dependency_matrix) in self.fds.iter() {
             println!("Checking table: {table_name}");
             let mut non_3nf_fds = Vec::new();
@@ -566,19 +658,28 @@ impl DependencyInference {
             conflicts.insert(table_name.clone(), non_3nf_fds);
         }
         println!("Confilcts: {:#?}", conflicts);
-        let mut grouped_conflicts = HashMap::new();
-        for (table_name, conflict) in conflicts.iter_mut() {
+        for (table_name, conflicts) in conflicts.iter() {
             let mut grouped_conflict = HashMap::new();
-            for (lhs, rhs) in conflict.drain(..) {
+            for (lhs, rhs) in conflicts.iter() {
                 grouped_conflict
-                    .entry(lhs)
-                    .or_insert_with(BTreeSet::new)
-                    .insert(rhs);
+                    .entry(lhs.clone())
+                    .or_insert_with(|| BTreeSet::from_iter(vec![*rhs]))
+                    .insert(*rhs);
             }
-            grouped_conflicts.insert(table_name.clone(), grouped_conflict);
+            decomposition_data.insert(table_name.clone(), grouped_conflict);
         }
-
-        println!("grouped: {:#?}", grouped_conflicts);
+        println!("dec data: {:#?}", decomposition_data);
+        let mut empty = true;
+        for (_, conflict) in decomposition_data.iter() {
+            if !conflict.is_empty() {
+                empty = false;
+            }
+        }
+        if empty {
+            return;
+        }
+        self.decompose(&decomposition_data)
+            .expect("Might fail idk.");
     }
 }
 
@@ -590,6 +691,16 @@ impl std::fmt::Display for DependencyInference {
         }
         Ok(())
     }
+}
+
+fn remove_elements_stable<T: Clone>(from: &[T], indeces: &[usize]) -> Vec<T> {
+    let mut removed = Vec::new();
+    for (idx, element) in from.iter().enumerate() {
+        if !indeces.contains(&idx) {
+            removed.push(element.clone());
+        }
+    }
+    removed
 }
 
 #[cfg(test)]
@@ -621,7 +732,13 @@ mod test {
             fds,
             folder: PathBuf::new(),
         };
+        dependency_inference.verify_and_set_primary_keys();
         dependency_inference.convert_to_2nf();
+        println!("{:#?}", dependency_inference.schema);
+        for fd in dependency_inference.fds {
+            println!("{}", fd.0);
+            fd.1.print_dependencies()
+        }
         panic!();
     }
 

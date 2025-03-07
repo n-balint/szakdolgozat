@@ -1,3 +1,7 @@
+use std::{collections::HashMap, error::Error, path::Path};
+
+use csv::{ReaderBuilder, WriterBuilder};
+
 use crate::{
     cassandra::{
         database::{ColumnDefinition as CassandraColumn, Keyspace, Table as CTable},
@@ -9,6 +13,67 @@ use crate::{
         types::{CompositeField, PrimitiveType as PostgresPrimitive, Type as PostgresType},
     },
 };
+
+pub(crate) fn convert_ir_to_final_export(
+    old_schema: &Schema,
+    normalized_schema: &Schema,
+    mir_folder: &Path,
+    export_folder: &Path,
+) -> Result<(), Box<dyn Error>> {
+    for table in normalized_schema.tables().iter() {
+        let mut new_table_writer = WriterBuilder::new()
+            .escape(b'\"')
+            .quote(b'\"')
+            .from_path(export_folder.join(format!("{}.csv", table.name())))?;
+
+        let header = table.columns().iter().map(|c| c.name());
+        new_table_writer.write_record(header)?;
+
+        let old_table = old_schema
+            .tables()
+            .iter()
+            .find(|t| t.uuid() == table.uuid())
+            .expect("Logic error.");
+
+        let old_table_path = mir_folder.join(format!("{}.IR", old_table.name()));
+
+        let mut reader = ReaderBuilder::new()
+            .escape(Some(b'\"'))
+            .quote(b'\"')
+            .has_headers(true)
+            .from_path(old_table_path)?;
+
+        let lookup_map = reader
+            .headers()?
+            .iter()
+            .enumerate()
+            .map(|(x, y)| (y.to_string(), x))
+            .collect::<HashMap<_, _>>();
+
+        for record in reader.records() {
+            let record = record?;
+            let mut new_row = Vec::with_capacity(table.columns().len());
+            for column in table.columns().iter() {
+                let old_column = old_table
+                    .columns()
+                    .iter()
+                    .find(|c| c.uuid() == column.uuid())
+                    .expect("Logic error");
+
+                let column_name = old_column.name();
+                println!("{column_name}");
+                println!("{:#?}", lookup_map);
+                let column_index = lookup_map[column_name];
+
+                let value = &record[column_index];
+                new_row.push(value);
+            }
+            new_table_writer.write_record(&new_row)?;
+        }
+        new_table_writer.flush()?;
+    }
+    Ok(())
+}
 
 pub(crate) fn convert_keyspace_to_schema(keyspace: &Keyspace) -> Result<Schema, ()> {
     let mut schema = Schema::new(keyspace.name().to_string());

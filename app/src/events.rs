@@ -3,8 +3,8 @@ use std::{
     sync::{atomic::AtomicBool, Arc},
 };
 
-pub mod parse_keyspace_event;
-pub mod parse_schema_event;
+pub mod cassandra_postgres_migration;
+pub mod postgres_cassandra_migration;
 
 pub trait Event {
     type AppState;
